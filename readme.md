@@ -184,7 +184,7 @@ To achieve optimal results, tune the following hyperparameters:
 If you use this code or dataset, please cite our paper:
 
 ```bibtex
-@misc{zhang2025softthinkingunlockingreasoning,
+@misc{zhang2025softthinking,
     title={Soft Thinking: Unlocking the Reasoning Potential of LLMs in Continuous Concept Space}, 
     author={Zhen Zhang and Xuehai He and Weixiang Yan and Ao Shen and Chenyang Zhao and Shuohang Wang and Yelong Shen and Xin Eric Wang},
     year={2025},

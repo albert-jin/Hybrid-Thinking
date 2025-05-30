@@ -166,6 +166,8 @@ python run_sglang_softthinking.py \
     --hf_token "<replace it>"
 ```
 
+When running coding benchmarks (HumanEval, MBPP, and LiveCodeBench), start by executing without the `--reeval` flag. Then, run it again with the `--reeval` flag. This is due to a multi-process bug.
+
 ## 🔍 Hyperparameter Search
 
 To achieve optimal results, tune the following hyperparameters:

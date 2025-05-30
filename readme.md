@@ -186,13 +186,10 @@ To achieve optimal results, tune the following hyperparameters:
 If you use this code or dataset, please cite our paper:
 
 ```bibtex
-@misc{zhang2025softthinking,
-    title={Soft Thinking: Unlocking the Reasoning Potential of LLMs in Continuous Concept Space}, 
-    author={Zhen Zhang and Xuehai He and Weixiang Yan and Ao Shen and Chenyang Zhao and Shuohang Wang and Yelong Shen and Xin Eric Wang},
-    year={2025},
-    eprint={2505.15778},
-    archivePrefix={arXiv},
-    primaryClass={cs.CL},
-    url={https://arxiv.org/abs/2505.15778}, 
+@article{zhang2025soft,
+  title={Soft Thinking: Unlocking the Reasoning Potential of LLMs in Continuous Concept Space},
+  author={Zhang, Zhen and He, Xuehai and Yan, Weixiang and Shen, Ao and Zhao, Chenyang and Wang, Shuohang and Shen, Yelong and Wang, Xin Eric},
+  journal={arXiv preprint arXiv:2505.15778},
+  year={2025}
 }
 ```

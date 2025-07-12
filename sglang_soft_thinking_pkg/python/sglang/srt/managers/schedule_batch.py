@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 from enum import Enum, auto
-import time
 
 # Copyright 2023-2024 SGLang Team
 # Licensed under the Apache License, Version 2.0 (the "License");

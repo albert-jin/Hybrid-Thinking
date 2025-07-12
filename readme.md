@@ -4,7 +4,7 @@
   <a href="https://arxiv.org/abs/2505.15778">
     <img src="https://img.shields.io/badge/arXiv-2505.15778-b31b1b.svg?style=flat" alt="arXiv">
   </a>
-  
+
 <a href="https://huggingface.co/papers/2505.15778">
     <img src="https://img.shields.io/badge/HuggingFace-Paper-orange.svg?style=flat" alt="Hugging Face Papers">
   </a>
@@ -16,7 +16,8 @@ This is the official implementation of the paper: [Soft Thinking: Unlocking the 
   <img src="./imgs/softthinking.png" alt="Soft Thinking" width="400"/>
 </p>
 
-
+## Re-development
+If you would like to build on top of our project, you can refer to `sglang_soft_thinking_pkg/README.md` or see the difference between SGLang v0.4.6.post1 in `sglang_soft_thinking_pkg/diff_0.4.6.post1.txt`.
 
 ## 📂 Directory Structure
 
@@ -32,7 +33,7 @@ soft_thinking/
 │   └── st/
 ├── sglang_soft_thinking_pkg/
 │   └── (sglang files)
-├── config.sh
+├── configure.sh
 ├── codeeval.py
 ├── convert_livecodebench.py
 ├── humanevaleval.py
@@ -62,16 +63,17 @@ cd ..
 ## 🚀 Quick Start
 
 1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/your-repo/soft_thinking.git
-   cd soft_thinking
-   ```
+    ```bash
+    git clone https://github.com/your-repo/soft_thinking.git
+    cd soft_thinking
+    ```
 2. **Set up the environment**:
    Follow the [Environment Setup](#environment-setup) instructions.
 3. **Run a baseline test**:
-   ```bash
-   bash scripts/baseline/qwq32b.sh
-   ```
+    ```bash
+    bash scripts/baseline/qwq32b.sh
+    ```
+   
 
 ## 🔄 Reproduction Instructions
 
@@ -120,6 +122,7 @@ python run_sglang_softthinking.py \
 ```
 
 > **Note:**
+>
 > - If you use the LLM judge or wish to upload results to Hugging Face, remember to provide the required API information.
 
 ---
@@ -166,19 +169,20 @@ python run_sglang_softthinking.py \
     --hf_token "<replace it>"
 ```
 
-When running coding benchmarks (HumanEval, MBPP, and LiveCodeBench), start by executing without the `--reeval` flag. Then, run it again with the `--reeval` flag for evaluation. This is due to a multi-process bug.
+When running **coding benchmarks (HumanEval, MBPP, and LiveCodeBench)**, start by executing without the `--reeval` flag. Then, run it again with the `--reeval` flag for evaluation. This is due to a multi-process bug.
 
 ## 🔍 Hyperparameter Search
 
 To achieve optimal results, tune the following hyperparameters:
 
 - `max_topk`: {5, 10, 15, 20}
-- `min_p`: {0.005, 0.01, 0.02}
-- `early_stopping_entropy_threshold`: {0.01, 0.05, 0.1, 0.3}
+- `min_p`: {0.0, 0.005, 0.01, 0.02}
+- `early_stopping_entropy_threshold`: {0.0, 0.01, 0.05, 0.1, 0.3}
 - `early_stopping_length_threshold`: {128, 256, 512, 1024}
 
 > **Note:**
-> - Results may vary across different devices even with the same hyperparameters, due to differences in computation precision.
+>
+> - Results may vary across different devices even with the same hyperparameters, due to differences in computation precision. We use H100 for all experiments.
 > - You can change the model (`model_name`) and dataset (`dataset`) to experiment with other configurations.
 
 ## 📜 Citation

@@ -20,13 +20,13 @@ MATH_DATASETS = ["math500","aime2024","aime2025","gpqa_diamond","gsm8k","amc23"]
 CODE_DATASETS = ["humaneval","mbpp","livecodebench"]
 
 def main():
+    # parse arguments
     parser = argparse.ArgumentParser(description='Process some parameters for text generation.')
     parser.add_argument('--dataset', type=str, choices=["math500", "aime2024", "aime2025", "gpqa_diamond", "gsm8k", "amc23", "humaneval", "mbpp", "livecodebench"], help='Name of dataset')
     parser.add_argument('--sampling_backend', type=str, choices=["pytorch", "flashinfer"], default="flashinfer", help='Sampling backend')
     parser.add_argument('--model_name', type=str, required=True, default="DeepSeek-R1-Distill-Qwen-1.5B", help='Model name or path')
     parser.add_argument('--max_generated_tokens', type=int, default=32768, help='Limit the number of generated tokens')
-    # parser.add_argument('--num_samples', type=int, default=1, help='Sampling number')
-    parser.add_argument('--num_gpus', type=int, default=4, help='GPU number')
+    parser.add_argument('--num_gpus', type=int, default=8, help='GPU number (tensor parallel size, tp_size)')
     parser.add_argument('--num_samples', type=int, default=1, help='Sampling number')
     parser.add_argument('--cuda_graph_max_bs', type=int, default=None, help='Max number of batch runned in one time.')
     parser.add_argument('--max_running_requests', type=int, default=None, help='Max number of requests runned together.')
@@ -48,16 +48,17 @@ def main():
     parser.add_argument('--start_idx', type=int, default=0, help='Start index for processing samples')
     parser.add_argument('--end_idx', type=int, default=500, help='End index for processing samples')
     parser.add_argument('--output_dir', type=str, default="results", help='Directory to save results')
-    parser.add_argument('--reeval', action='store_true', help='Enable re-evaluation')
+
+    parser.add_argument('--reeval', action='store_true', help='Enable re-evaluation for code datasets (due to Multiprocessing bug when using sglang rollout)')
     parser.add_argument('--use_llm_judge', action='store_true', help='Enable LLM judge')
     parser.add_argument('--api_base', type=str, default=None, help='')
     parser.add_argument('--deployment_name', type=str, default=None, help='')
     parser.add_argument('--api_version', type=str, default=None, help='')
     parser.add_argument('--api_key', type=str, default=None, help='')
-
     parser.add_argument('--push_results_to_hf', action='store_true', help='Enable push to huggingface')
     parser.add_argument('--hf_token', type=str, default=None, help='')
     parser.add_argument('--hf_repo_id', type=str, default=None, help='')
+
     parser.add_argument(
             "--enable_soft_thinking",
             action="store_true",
@@ -71,7 +72,7 @@ def main():
     parser.add_argument(
         "--max_topk",
         type=int,
-        default=30,
+        default=15,
     )
 
     args = parser.parse_args()
@@ -96,9 +97,10 @@ def main():
 
 
     print(f"Arguments: {args}", flush=True)
-    
-    matheval.set_client(args.api_base, args.deployment_name, args.api_version, args.api_key)
+    if dataset in MATH_DATASETS:
+        matheval.set_client(args.api_base, args.deployment_name, args.api_version, args.api_key)
 
+    # load dataset
     if dataset == "math500":
         with open("./datasets/math500.json") as f:
             samples = json.load(f)
@@ -129,6 +131,7 @@ def main():
     else:
         raise ValueError("Invalid dataset name")
 
+    # prompt templates
     MATH_QUERY_TEMPLATE = """
 Please reason step by step, and put your final answer within \\boxed{{}}.
 
@@ -174,8 +177,6 @@ Test Cases:
         return prompt
 
 
-    # if not (dataset in CODE_DATASETS and reeval):
-    # llm = sgl.Engine(model_path=model_name, tp_size=num_gpus, log_level="info", trust_remote_code=True, random_seed=0, max_running_requests=max_running_requests, mem_fraction_static=mem_fraction_static, disable_cuda_graph=True, disable_overlap_schedule=True, return_hidden_states=True)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     sampling_params = {"temperature": temperature, "top_p": top_p, "top_k": top_k, "min_p": min_p, "repetition_penalty": args.repetition_penalty,
                        "after_thinking_temperature": args.after_thinking_temperature, "after_thinking_top_p": args.after_thinking_top_p, "after_thinking_top_k": args.after_thinking_top_k, "after_thinking_min_p": args.after_thinking_min_p,
@@ -195,6 +196,7 @@ Test Cases:
     print("begin")
     start_time = time.time()
 
+    # if reeval for code datasets, read results_file
     if reeval:
         # read results_file
         with open(results_file, "r") as f:
@@ -210,7 +212,7 @@ Test Cases:
             finish_generation_list.extend(r["finish_generation"])
             generated_tokens_list.extend(r["generated_tokens"])
         results = []
-
+    # if not reeval, collect prompt and idx
     else:
         prompt_list = []
         idx_list = []
@@ -235,6 +237,8 @@ Test Cases:
                 prompt_list.append(prompt)
 
             idx_list.append(idx)
+
+        # generate results
         decoded_text_list = []
         finish_generation_list = []
         generated_tokens_list = []
@@ -252,9 +256,12 @@ Test Cases:
 
             torch.cuda.empty_cache()
 
-    mbppeval.init_evaluator()
-    humanevaleval.init_evaluator()
+    # init evaluator for code datasets
+    if dataset in CODE_DATASETS:
+        mbppeval.init_evaluator()
+        humanevaleval.init_evaluator()
 
+    # evaluate results
     for i,idx in enumerate(idx_list):
         print(idx, flush=True)
         sample = samples[idx]
@@ -262,7 +269,8 @@ Test Cases:
         passat1_list = []
         decoded_text = decoded_text_list[i*args.num_samples:(i+1)*args.num_samples]
         finish_generation = finish_generation_list[i*args.num_samples:(i+1)*args.num_samples]
-        # output = outputs[i]
+
+        # evaluate each sample
         for j in range(args.num_samples):
             for _ in range(5):
                 try:
@@ -311,8 +319,7 @@ Test Cases:
                     print(f"Error: {e}", flush=True)
                     time.sleep(0.5)
 
-
-
+    # save result
         result = {
             "hyperparams": str(args),
             "prompt": sample["prompt"][0]["value"],
@@ -334,13 +341,14 @@ Test Cases:
         results.sort(key=lambda x: x["idx"])
         json.dump(results, f, indent=4)
     
+    # convert livecodebench format
     if dataset == "livecodebench":
         from convert_livecodebench import convert_json
         # convert convert_livecodebenchnch format
         results_file_converted = f"{args.output_dir}/results/{dataset}/{model_name.split('/')[-1]}_{dataset}_{args.enable_soft_thinking}_{args.num_samples}_{temperature}_{top_p}_{top_k}_{min_p}_{args.repetition_penalty}_{args.dirichlet_alpha}_{args.max_topk}_{max_generated_tokens}_{args.early_stopping_entropy_threshold}_{args.early_stopping_length_threshold}_converted.json"
         convert_json(input_file=results_file, output_file=results_file_converted)
         if reeval:
-            # 需要先cd到Livecodebench_pkg
+            # need to cd to Livecodebench_pkg
             import subprocess
             import sys
 
@@ -379,14 +387,9 @@ Test Cases:
                 results.sort(key=lambda x: x["idx"])
                 json.dump(results, f, indent=4)
 
-
-
+    # calculate statistics
     total_num = len(results)
     pass_at_1 = sum([r["passat1"] for r in results]) / total_num if total_num > 0 else 0
-    # all_idx = sorted([(r["idx"], r["passat1"]) for r in results], key=lambda x: x[0])
-
-    # avg_token_length_all = sum([r["generated_tokens"] for r in results]) / total_num if total_num > 0 else 0
-    # avg_token_length_correct = sum([r["generated_tokens"] for r in results if r["passat1"] > 0.0]) / len([r["passat1"] for r in results if r["passat1"] > 0.0]) if len([r["passat1"] for r in results if r["passat1"] > 0.0]) > 0 else 0
 
     end_time = time.time()
     print("end", flush=True)
@@ -404,9 +407,11 @@ Test Cases:
     all_idx = sorted([(r["idx"], r["passat1"]) for r in results], key=lambda x: x[0])
     results_statistics["all_idx"] = {i:j for i,j in all_idx}
 
+    # save results_statistics
     with open(results_statistics_file, "w") as f:
         json.dump(results_statistics, f, indent=4)
 
+    # push results_statistics to huggingface
     if args.push_results_to_hf:
         api = HfApi()
         api.upload_file(

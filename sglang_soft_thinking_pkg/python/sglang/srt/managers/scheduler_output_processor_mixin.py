@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from typing import TYPE_CHECKING, List, Optional, Tuple, Union
 
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
@@ -196,7 +195,6 @@ class SchedulerOutputProcessorMixin:
         result: GenerationBatchResult,
         launch_done: Optional[threading.Event] = None,
     ):
-        import time
         logits_output, next_token_ids, bid = (
             result.logits_output,
             result.next_token_ids,
@@ -220,10 +218,7 @@ class SchedulerOutputProcessorMixin:
         # Check finish condition
         # NOTE: the length of reqs and next_token_ids don't match if it is spec decoding.
         # We should ignore using next_token_ids for spec decoding cases.
-        time_1_sum = 0
-        time_2_sum = 0
         for i, (req, next_token_id) in enumerate(zip(batch.reqs, next_token_ids)):
-            start_time = time.time()
             if req.is_retracted:
                 continue
 
@@ -247,13 +242,8 @@ class SchedulerOutputProcessorMixin:
 
             req.check_finished()
 
-            # time_1 = time.time()
-            # time_1_sum += time_1-start_time
             if req.finished():
                 self.tree_cache.cache_finished_req(req)
-            
-            # time_2 = time.time()
-            # time_2_sum += time_2-time_1
 
             if req.return_logprob and batch.spec_algorithm.is_none():
                 # speculative worker handles logprob in speculative decoding
@@ -293,8 +283,6 @@ class SchedulerOutputProcessorMixin:
             # end of soft thinking
             # ==========
         
-        # print(f"time_1_sum: {time_1_sum:.20f}",flush=True)
-        # print(f"time_2_sum: {time_2_sum:.20f}",flush=True)
         if batch.next_batch_sampling_info:
             batch.next_batch_sampling_info.update_regex_vocab_mask()
             self.current_stream.synchronize()
@@ -561,7 +549,7 @@ class SchedulerOutputProcessorMixin:
                 # always increase one-by-one.
                 or (
                     not req.stream
-                    and len(req.output_ids) % 5000 == 0
+                    and len(req.output_ids) % 16384 == 0
                     and not self.model_config.is_multimodal_gen
                 )
             ):

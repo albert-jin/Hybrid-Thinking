@@ -1,7 +1,7 @@
 python ./models/download.py --model_name "Qwen/QwQ-32B"
 
+export OPENAI_API_KEY=""
 
-OPENAI_API_KEY="" \
 python run_sglang_softthinking.py \
     --dataset "aime2024" \
     --model_name "./models/Qwen/QwQ-32B" \
@@ -26,7 +26,6 @@ python run_sglang_softthinking.py \
     --use_llm_judge \
     --judge_model_name "gpt-4.1-2025-04-14" 
 
-OPENAI_API_KEY="" \
 python run_sglang_softthinking.py \
     --dataset "math500" \
     --model_name "./models/Qwen/QwQ-32B" \
@@ -51,7 +50,6 @@ python run_sglang_softthinking.py \
     --use_llm_judge \
     --judge_model_name "gpt-4.1-2025-04-14" 
 
-OPENAI_API_KEY="" \
 python run_sglang_softthinking.py \
     --dataset "gsm8k" \
     --model_name "./models/Qwen/QwQ-32B" \
@@ -76,7 +74,6 @@ python run_sglang_softthinking.py \
     --use_llm_judge \
     --judge_model_name "gpt-4.1-2025-04-14" 
 
-OPENAI_API_KEY="" \
 python run_sglang_softthinking.py \
     --dataset "gpqa_diamond" \
     --model_name "./models/Qwen/QwQ-32B" \

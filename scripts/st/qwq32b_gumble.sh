@@ -1,5 +1,12 @@
 python ./models/download.py --model_name "Qwen/QwQ-32B"
 
+
+# --add_noise_gumbel_softmax \
+# --gumbel_softmax_temperature 0.5
+# --add_noise_dirichlet \
+# --dirichlet_temperature 1.0 \
+
+
 # aime2024 sampling & evaluation
 python run_sglang_softthinking.py \
     --dataset "aime2024" \

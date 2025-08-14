@@ -1,6 +1,7 @@
 python ./models/download.py --model_name "Qwen/QwQ-32B"
 
-OPENAI_API_KEY="" \
+export OPENAI_API_KEY=""
+
 python run_sglang_softthinking.py \
     --dataset "aime2024" \
     --model_name "./models/Qwen/QwQ-32B" \

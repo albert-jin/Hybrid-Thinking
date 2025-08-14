@@ -76,9 +76,15 @@ class SamplingBatchInfo:
     after_thinking_top_ps: Optional[torch.Tensor] = None
     after_thinking_top_ks: Optional[torch.Tensor] = None
     after_thinking_min_ps: Optional[torch.Tensor] = None
-    dirichlet_alphas: Optional[torch.Tensor] = None
     early_stopping_entropy_threshold: Optional[torch.Tensor] = None
     early_stopping_length_threshold: Optional[torch.Tensor] = None
+
+    # Dirichlet sampling parameters
+    add_noise_dirichlet: bool = None
+    dirichlet_alphas: Optional[torch.Tensor] = None
+    # Gumbel-softmax sampling parameters
+    add_noise_gumbel_softmax: bool = None
+    gumbel_softmax_temperatures: Optional[torch.Tensor] = None
     # ==========
     # end of soft thinking
     # ==========
@@ -134,6 +140,10 @@ class SamplingBatchInfo:
         early_stopping_length_threshold = torch.tensor(
             [r.sampling_params.early_stopping_length_threshold for r in reqs], dtype=torch.int32
         ).to(device, non_blocking=True)
+        # Gumbel-softmax sampling parameters
+        gumbel_softmax_temperatures = torch.tensor(
+            [r.sampling_params.gumbel_softmax_temperature for r in reqs], dtype=torch.float
+        ).view(-1, 1).to(device, non_blocking=True)
         # ==========
         # end of soft thinking
         # ==========
@@ -214,15 +224,18 @@ class SamplingBatchInfo:
             after_thinking_top_ps=after_thinking_top_ps,
             after_thinking_top_ks=after_thinking_top_ks,
             after_thinking_min_ps=after_thinking_min_ps,
-            dirichlet_alphas=dirichlet_alphas,
             early_stopping_entropy_threshold=early_stopping_entropy_threshold,
             early_stopping_length_threshold=early_stopping_length_threshold,
             is_all_greedy=all(r.sampling_params.top_k <= 1 for r in reqs),
-            is_all_no_noise=all(r.sampling_params.dirichlet_alpha >= 1.0e6 for r in reqs),
+            is_all_no_noise=False,
             need_after_thinking_min_p_sampling=any(r.sampling_params.after_thinking_min_p > 0 for r in reqs),
             enable_soft_thinking=batch.enable_soft_thinking,
             soft_thinking_modes=soft_thinking_modes,
             max_topk=max_topk,
+            # Dirichlet sampling parameters
+            dirichlet_alphas=dirichlet_alphas,
+            # Gumbel-softmax sampling parameters
+            gumbel_softmax_temperatures=gumbel_softmax_temperatures,
             # ==========
             # end of soft thinking
             # ==========
@@ -301,6 +314,9 @@ class SamplingBatchInfo:
             "top_ks",
             "min_ps",
         ]
+        # ==========
+        # begin of soft thinking
+        # ==========
         if self.enable_soft_thinking:
             filter_list.append("soft_thinking_modes")
             filter_list.append("after_thinking_temperatures")
@@ -310,7 +326,11 @@ class SamplingBatchInfo:
             filter_list.append("dirichlet_alphas")
             filter_list.append("early_stopping_entropy_threshold")
             filter_list.append("early_stopping_length_threshold")
-        
+            filter_list.append("gumbel_softmax_temperatures")
+        # ==========
+        # end of soft thinking
+        # ==========
+
         for item in filter_list:
             value = getattr(self, item, None)
             setattr(self, item, value[keep_indices_device])
@@ -407,6 +427,9 @@ class SamplingBatchInfo:
             "top_ks",
             "min_ps",
         ]
+        # ==========
+        # begin of soft thinking
+        # ==========
         if self.enable_soft_thinking:
             merge_list.append("soft_thinking_modes")
             merge_list.append("after_thinking_temperatures")
@@ -416,6 +439,10 @@ class SamplingBatchInfo:
             merge_list.append("dirichlet_alphas")
             merge_list.append("early_stopping_entropy_threshold")
             merge_list.append("early_stopping_length_threshold")
+            merge_list.append("gumbel_softmax_temperatures")
+        # ==========
+        # end of soft thinking
+        # ==========
 
         for item in merge_list:
             self_val = getattr(self, item, None)

@@ -187,6 +187,8 @@ class ModelRunner:
         # begin of soft thinking
         # ==========
         self.enable_soft_thinking = server_args.enable_soft_thinking
+        self.add_noise_dirichlet = server_args.add_noise_dirichlet
+        self.add_noise_gumbel_softmax = server_args.add_noise_gumbel_softmax
         # ==========
         # end of soft thinking
         # ==========
@@ -1116,6 +1118,8 @@ class ModelRunner:
             forward_batch.top_logprobs_nums,
             forward_batch.token_ids_logprobs,  
             enable_soft_thinking=self.enable_soft_thinking,
+            add_noise_gumbel_softmax=self.add_noise_gumbel_softmax,
+            add_noise_dirichlet=self.add_noise_dirichlet,
         )   
 
         # ==========

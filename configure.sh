@@ -15,3 +15,17 @@ mv LiveCodeBench LiveCodeBench_pkg
 cd LiveCodeBench_pkg
 pip install -e . --no-deps
 cd ..
+
+
+# For docker
+cd Soft-Thinking
+docker build -t soft-thinking:st-cu124-py311 .
+# NVIDIA Container Toolkit is required
+docker run --gpus all --rm -it \
+  -v $PWD:/workspace \
+  soft-thinking:st-cu124-py311 bash
+
+# check version
+# python -V
+# python -c "import torch; print(torch.__version__, torch.version.cuda)"
+# python -c "import sglang; print(sglang.__version__)"

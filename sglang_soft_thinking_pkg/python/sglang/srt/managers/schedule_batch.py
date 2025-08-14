@@ -747,6 +747,7 @@ class Req:
                     self.topk_idx[1:].fill_(0)
                     self.topk_prob[0] = 1.0
                     self.topk_idx[0] = self.sampling_params.think_end_str_id
+                    self.low_entropy_steps = 0
 
             if self.sampling_params.think_end_str_id == self.output_ids[-1]:
                 # 退出 soft thinking 模式并将 topk 设置为 one-hot
@@ -756,7 +757,17 @@ class Req:
                 self.topk_idx[1:].fill_(0)
                 self.topk_prob[0] = 1.0
                 self.topk_idx[0] = self.sampling_params.think_end_str_id
+                self.low_entropy_steps = 0
         else:
+            if self.sampling_params.early_stopping_entropy_threshold > 0:
+                if self.entropy < self.sampling_params.early_stopping_entropy_threshold:
+                    self.low_entropy_steps += 1
+                else:
+                    self.low_entropy_steps = 0
+                if self.low_entropy_steps >= self.sampling_params.early_stopping_length_threshold:
+                    print(f"Early stopping triggered.", flush=True)
+                    self.to_abort = True
+
             # 普通模式下只需 in-place 清零 tail，head 保持 logits 输出
             self.topk_prob[1:].fill_(0)
             self.topk_idx[1:].fill_(0)

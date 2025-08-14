@@ -25,55 +25,52 @@ def main():
     parser.add_argument('--dataset', type=str, choices=["math500", "aime2024", "aime2025", "gpqa_diamond", "gsm8k", "amc23", "humaneval", "mbpp", "livecodebench"], help='Name of dataset')
     parser.add_argument('--sampling_backend', type=str, choices=["pytorch", "flashinfer"], default="flashinfer", help='Sampling backend')
     parser.add_argument('--model_name', type=str, required=True, default="DeepSeek-R1-Distill-Qwen-1.5B", help='Model name or path')
-    parser.add_argument('--max_generated_tokens', type=int, default=32768, help='Limit the number of generated tokens')
     parser.add_argument('--num_gpus', type=int, default=8, help='GPU number (tensor parallel size, tp_size)')
-    parser.add_argument('--num_samples', type=int, default=1, help='Sampling number')
     parser.add_argument('--cuda_graph_max_bs', type=int, default=None, help='Max number of batch runned in one time.')
     parser.add_argument('--max_running_requests', type=int, default=None, help='Max number of requests runned together.')
     parser.add_argument('--max_batch', type=int, default=1000000, help='Max number of batch runned in one time.')
     parser.add_argument('--mem_fraction_static', type=float, default=0.5, help='Max memory to use per gpu.')
     parser.add_argument('--random_seed', type=int, default=0, help='Random seed')
+    parser.add_argument('--output_dir', type=str, default="results", help='Directory to save results')
+    parser.add_argument('--start_idx', type=int, default=0, help='Start index for processing samples')
+    parser.add_argument('--end_idx', type=int, default=500, help='End index for processing samples')
+
+    # sampling parameters
+    parser.add_argument('--num_samples', type=int, default=1, help='Sampling number')
+    parser.add_argument('--max_generated_tokens', type=int, default=32768, help='Limit the number of generated tokens')
     parser.add_argument('--temperature', type=float, default=0.6, help='Sampling temperature')
     parser.add_argument('--top_p', type=float, default=0.95, help='Top-p sampling probability')
     parser.add_argument('--top_k', type=int, default=30, help='Top-k sampling probability')
     parser.add_argument('--min_p', type=float, default=0.0, help='Min-p sampling probability')
-    parser.add_argument('--early_stopping_entropy_threshold', type=float, default=0.0, help='Early stopping entropy threshold')
-    parser.add_argument('--early_stopping_length_threshold', type=int, default=200, help='Early stopping length threshold')
-    parser.add_argument('--repetition_penalty', type=float, default=1.0, help='Repetition penalty')
     parser.add_argument('--after_thinking_temperature', type=float, default=0.6, help='Temperature after thinking')
     parser.add_argument('--after_thinking_top_p', type=float, default=0.95, help='Top-p after thinking')
     parser.add_argument('--after_thinking_top_k', type=int, default=30, help='Top-k after thinking')
     parser.add_argument('--after_thinking_min_p', type=float, default=0.0, help='Min-p after thinking')
-    parser.add_argument('--dirichlet_alpha', type=float, default=1.0e20, help='Dirichlet alpha')
-    parser.add_argument('--start_idx', type=int, default=0, help='Start index for processing samples')
-    parser.add_argument('--end_idx', type=int, default=500, help='End index for processing samples')
-    parser.add_argument('--output_dir', type=str, default="results", help='Directory to save results')
+    parser.add_argument('--early_stopping_entropy_threshold', type=float, default=0.0, help='Early stopping entropy threshold (set it to 0.0 to disable early stopping)')
+    parser.add_argument('--early_stopping_length_threshold', type=int, default=256, help='Early stopping length threshold')
+    parser.add_argument('--repetition_penalty', type=float, default=1.0, help='Repetition penalty')
 
+    # Noise parameters
+    parser.add_argument('--dirichlet_alpha', type=float, default=1.0, help='Dirichlet alpha')
+    parser.add_argument('--gumbel_softmax_temperature', type=float, default=1.0, help='Gumbel-softmax temperature')
+    parser.add_argument('--add_noise_dirichlet', action='store_true', help='Add Dirichlet noise to sampling')
+    parser.add_argument('--add_noise_gumbel_softmax', action='store_true', help='Add Gumbel-softmax noise to sampling')
+
+    # Eval & Push parameters
     parser.add_argument('--reeval', action='store_true', help='Enable re-evaluation for code datasets (due to Multiprocessing bug when using sglang rollout)')
     parser.add_argument('--use_llm_judge', action='store_true', help='Enable LLM judge')
     parser.add_argument('--api_base', type=str, default=None, help='')
     parser.add_argument('--deployment_name', type=str, default=None, help='')
     parser.add_argument('--api_version', type=str, default=None, help='')
     parser.add_argument('--api_key', type=str, default=None, help='')
+    parser.add_argument('--judge_model_name', type=str, default="gpt-4.1-2025-04-14", help='Judge LLM model name for evaluation')
     parser.add_argument('--push_results_to_hf', action='store_true', help='Enable push to huggingface')
     parser.add_argument('--hf_token', type=str, default=None, help='')
     parser.add_argument('--hf_repo_id', type=str, default=None, help='')
 
-    parser.add_argument(
-            "--enable_soft_thinking",
-            action="store_true",
-            help="Enable soft thinking mode"
-        )
-    parser.add_argument(
-            "--think_end_str",
-            type=str,
-            default="</think>",
-        )
-    parser.add_argument(
-        "--max_topk",
-        type=int,
-        default=15,
-    )
+    parser.add_argument("--enable_soft_thinking", action="store_true", help="Enable soft thinking mode")
+    parser.add_argument("--think_end_str", type=str, default="</think>")
+    parser.add_argument("--max_topk", type=int, default=15)
 
     args = parser.parse_args()
 
@@ -98,7 +95,7 @@ def main():
 
     print(f"Arguments: {args}", flush=True)
     if dataset in MATH_DATASETS:
-        matheval.set_client(args.api_base, args.deployment_name, args.api_version, args.api_key)
+        matheval.set_client(args.api_base, args.deployment_name, args.api_version, args.api_key, args.judge_model_name)
 
     # load dataset
     if dataset == "math500":
@@ -179,17 +176,27 @@ Test Cases:
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     sampling_params = {"temperature": temperature, "top_p": top_p, "top_k": top_k, "min_p": min_p, "repetition_penalty": args.repetition_penalty,
-                       "after_thinking_temperature": args.after_thinking_temperature, "after_thinking_top_p": args.after_thinking_top_p, "after_thinking_top_k": args.after_thinking_top_k, "after_thinking_min_p": args.after_thinking_min_p,
-                       "dirichlet_alpha": args.dirichlet_alpha,
-                       "n": 1,
-                       "max_new_tokens": max_generated_tokens, "think_end_str": think_end_str,
-                       "early_stopping_entropy_threshold": args.early_stopping_entropy_threshold,
-                       "early_stopping_length_threshold": args.early_stopping_length_threshold
+                        "after_thinking_temperature": args.after_thinking_temperature, "after_thinking_top_p": args.after_thinking_top_p, "after_thinking_top_k": args.after_thinking_top_k, "after_thinking_min_p": args.after_thinking_min_p,
+                        "n": 1, # repeat prompt for num_samples times instead of using num_samples in sampling_params
+                        "gumbel_softmax_temperature": args.gumbel_softmax_temperature, "dirichlet_alpha": args.dirichlet_alpha,
+                        "max_new_tokens": max_generated_tokens, "think_end_str": think_end_str,
+                        "early_stopping_entropy_threshold": args.early_stopping_entropy_threshold,
+                        "early_stopping_length_threshold": args.early_stopping_length_threshold
                     }
 
     os.makedirs(f"{args.output_dir}/results/{dataset}", exist_ok=True)
-    results_file = f"{args.output_dir}/results/{dataset}/{model_name.split('/')[-1]}_{dataset}_{args.enable_soft_thinking}_{args.num_samples}_{temperature}_{top_p}_{top_k}_{min_p}_{args.repetition_penalty}_{args.dirichlet_alpha}_{args.max_topk}_{max_generated_tokens}_{args.early_stopping_entropy_threshold}_{args.early_stopping_length_threshold}.json"
-    results_statistics_file = f"{args.output_dir}/results/{dataset}/{model_name.split('/')[-1]}_{dataset}_{args.enable_soft_thinking}_{args.num_samples}_{temperature}_{top_p}_{top_k}_{min_p}_{args.repetition_penalty}_{args.dirichlet_alpha}_{args.max_topk}_{max_generated_tokens}_{args.early_stopping_entropy_threshold}_{args.early_stopping_length_threshold}_statistics.json"
+    noise_suffix = (
+        ("_gumbel" if args.add_noise_gumbel_softmax else "")
+        + ("_dirichlet" if args.add_noise_dirichlet else "")
+    )
+    base_filename = (
+        f"{model_name.split('/')[-1]}_{dataset}_{args.enable_soft_thinking}_{args.num_samples}_"
+        f"{temperature}_{top_p}_{top_k}_{min_p}_{args.repetition_penalty}_{args.dirichlet_alpha}_"
+        f"{args.max_topk}_{max_generated_tokens}_{args.early_stopping_entropy_threshold}_"
+        f"{args.early_stopping_length_threshold}{noise_suffix}"
+    )
+    results_file = f"{args.output_dir}/results/{dataset}/{base_filename}.json"
+    results_statistics_file = f"{args.output_dir}/results/{dataset}/{base_filename}_statistics.json"
 
     results = []
 
@@ -233,6 +240,8 @@ Test Cases:
                 raise ValueError("Invalid dataset name")
 
             prompt = tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
+
+            # Repeat prompt for num_samples times instead of using num_samples in sampling_params
             for _ in range(args.num_samples):
                 prompt_list.append(prompt)
 
@@ -245,10 +254,27 @@ Test Cases:
         idx = 0
         while idx < len(prompt_list):
             print(f"Number of GPUs available: {num_gpus}", flush=True)
-            llm = sgl.Engine(model_path=model_name, tp_size=num_gpus, log_level="info", trust_remote_code=True, random_seed=random_seed, max_running_requests=max_running_requests, mem_fraction_static=mem_fraction_static, disable_cuda_graph=True, disable_overlap_schedule=True, enable_soft_thinking=args.enable_soft_thinking, max_topk=args.max_topk, cuda_graph_max_bs=args.cuda_graph_max_bs, sampling_backend=args.sampling_backend)
+            llm = sgl.Engine(
+                model_path=model_name,
+                tp_size=num_gpus,
+                log_level="info",
+                trust_remote_code=True,
+                random_seed=random_seed,
+                max_running_requests=max_running_requests,
+                mem_fraction_static=mem_fraction_static,
+                disable_cuda_graph=True,
+                disable_overlap_schedule=True,
+                enable_soft_thinking=args.enable_soft_thinking,
+                add_noise_dirichlet=args.add_noise_dirichlet,
+                add_noise_gumbel_softmax=args.add_noise_gumbel_softmax,
+                max_topk=args.max_topk,
+                cuda_graph_max_bs=args.cuda_graph_max_bs,
+                sampling_backend=args.sampling_backend
+            )
             outputs =  llm.generate(prompt_list[idx:idx+max_batch], sampling_params)
             decoded_text_list.extend([o["text"] for o in outputs])
-            finish_generation_list.extend([o["meta_info"]["finish_reason"] != "length" for o in outputs])
+            finish_generation_list.extend([o["meta_info"]["finish_reason"]["type"] == "stop" and not args.enable_soft_thinking for o in outputs])
+
             generated_tokens_list.extend([o["meta_info"]["completion_tokens"] for o in outputs])
             idx += max_batch
             outputs = None
@@ -345,7 +371,7 @@ Test Cases:
     if dataset == "livecodebench":
         from convert_livecodebench import convert_json
         # convert convert_livecodebenchnch format
-        results_file_converted = f"{args.output_dir}/results/{dataset}/{model_name.split('/')[-1]}_{dataset}_{args.enable_soft_thinking}_{args.num_samples}_{temperature}_{top_p}_{top_k}_{min_p}_{args.repetition_penalty}_{args.dirichlet_alpha}_{args.max_topk}_{max_generated_tokens}_{args.early_stopping_entropy_threshold}_{args.early_stopping_length_threshold}_converted.json"
+        results_file_converted = f"{args.output_dir}/results/{dataset}/{base_filename}_converted.json"
         convert_json(input_file=results_file, output_file=results_file_converted)
         if reeval:
             # need to cd to Livecodebench_pkg
@@ -362,6 +388,8 @@ Test Cases:
                 "--custom_output_file", "../"+results_file_converted,
                 "--release_version", "release_v5",
                 "--start_date", "2024-08-01",
+                "--num_process_evaluate", "1",
+                "--timeout", "50"
             ]
 
             print("Running custom_evaluator for LiveCodeBench reeval (cd to Livecodebench_pkg first)...")
@@ -372,7 +400,7 @@ Test Cases:
                 print(f"Error running custom_evaluator: {e}", flush=True)
             finally:
                 os.chdir(orig_cwd)
-            livecodebench_results_file = f"{args.output_dir}/results/{dataset}/{model_name.split('/')[-1]}_{dataset}_{args.enable_soft_thinking}_{args.num_samples}_{temperature}_{top_p}_{top_k}_{min_p}_{args.repetition_penalty}_{args.dirichlet_alpha}_{args.max_topk}_{max_generated_tokens}_{args.early_stopping_entropy_threshold}_{args.early_stopping_length_threshold}_converted_codegeneration_output_eval_all.json"
+            livecodebench_results_file = f"{args.output_dir}/results/{dataset}/{base_filename}_converted_codegeneration_output_eval_all.json"
             with open(livecodebench_results_file, "r") as f:
                 livecodebench_results = json.load(f)
 

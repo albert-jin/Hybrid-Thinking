@@ -525,7 +525,7 @@ class VocabParallelEmbedding(torch.nn.Module):
         # Validate inputs
         assert topk_probs.shape == topk_indices.shape, "topk_probs and topk_indices must have same shape."
         # Normalize probs to sum to 1.0 along last dim.
-        # topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True)
+        topk_probs = topk_probs / topk_probs.sum(dim=-1, keepdim=True)
         masked_indices, input_mask = self.get_masked_indices_and_mask(
             topk_indices,
             self.shard_indices.org_vocab_start_index,

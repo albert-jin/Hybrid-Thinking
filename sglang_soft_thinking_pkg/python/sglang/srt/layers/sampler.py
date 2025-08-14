@@ -11,6 +11,7 @@ from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.utils import crash_on_warnings, get_bool_env_var, is_cuda
+import torch.nn.functional as F
 
 if is_cuda():
     from sgl_kernel import (
@@ -46,6 +47,8 @@ class Sampler(nn.Module):
         # begin of soft thinking
         # ==========
         enable_soft_thinking: bool = False,
+        add_noise_dirichlet: bool = False,
+        add_noise_gumbel_softmax: bool = False,
         # ==========
         # end of soft thinking
         # ==========
@@ -155,7 +158,7 @@ class Sampler(nn.Module):
                         probs = probs / probs.sum(dim=-1, keepdim=True)
 
                     # dirichlet noise (not used in paper)
-                    if not sampling_info.is_all_no_noise: # slow
+                    if add_noise_dirichlet: # slow
                         conc = probs[soft_mask] * dirichlet_alphas[soft_mask].view(-1, 1)
                         gamma_dist = torch.distributions.Gamma(conc, torch.ones_like(conc))
                         gamma_samples = gamma_dist.sample()
@@ -165,6 +168,22 @@ class Sampler(nn.Module):
                     # max top k
                     topk_probs, topk_indices = torch.topk(probs, k=sampling_info.max_topk, dim=-1) # slow
                     topk_probs = topk_probs / (topk_probs.sum(dim=-1, keepdim=True))
+
+                    # gumbel softmax noise (not used in paper)
+                    if add_noise_gumbel_softmax: # slow
+                        topk_logits = torch.log(topk_probs)
+                        gumbels = (
+                            -torch.empty_like(topk_logits)
+                            .exponential_()
+                            .log()
+                        )  # ~Gumbel(0,1)
+                        gumbels = (topk_logits + gumbels) / sampling_info.gumbel_softmax_temperatures  # ~Gumbel(logits,tau)
+                        topk_probs = gumbels.softmax(-1)
+                        # topk_probs = F.gumbel_softmax(topk_logits, tau=sampling_info.dirichlet_alphas) # use dirichlet alpha as temperature
+                        # sort the topk token according to new probability
+                        sorted_weights, sorted_idx = torch.sort(topk_probs, dim=-1, descending=True)
+                        topk_probs = sorted_weights
+                        topk_indices = torch.gather(topk_indices, dim=1, index=sorted_idx)
 
                     # after thinking sampling
                     non_soft_mask = ~soft_mask

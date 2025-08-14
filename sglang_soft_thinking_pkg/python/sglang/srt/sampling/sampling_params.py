@@ -47,6 +47,7 @@ class SamplingParams:
         early_stopping_entropy_threshold: float = 0.0,
         early_stopping_length_threshold: int = 200,
         think_end_str: Optional[str] = None,
+        gumbel_softmax_temperature: float = 1.0,
         # ==========
         # end of soft thinking
         # ==========
@@ -82,11 +83,14 @@ class SamplingParams:
         self.after_thinking_top_p = after_thinking_top_p
         self.after_thinking_top_k = after_thinking_top_k
         self.after_thinking_min_p = after_thinking_min_p
-        self.dirichlet_alpha = dirichlet_alpha
         self.early_stopping_entropy_threshold = early_stopping_entropy_threshold
         self.early_stopping_length_threshold = early_stopping_length_threshold
         self.soft_thinking_mode = None
         self.think_end_str = think_end_str
+        # Dirichlet sampling parameters
+        self.dirichlet_alpha = dirichlet_alpha
+        # Gumbel-softmax sampling parameters
+        self.gumbel_softmax_temperature = gumbel_softmax_temperature
         # ==========
         # end of soft thinking
         # ==========

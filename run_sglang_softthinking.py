@@ -186,8 +186,8 @@ Test Cases:
 
     os.makedirs(f"{args.output_dir}/results/{dataset}", exist_ok=True)
     noise_suffix = (
-        ("_gumbel" if args.add_noise_gumbel_softmax else "")
-        + ("_dirichlet" if args.add_noise_dirichlet else "")
+        (f"_gumbel_{args.gumbel_softmax_temperature}" if args.add_noise_gumbel_softmax else "")
+        + (f"_dirichlet_{args.dirichlet_alpha}" if args.add_noise_dirichlet else "")
     )
     base_filename = (
         f"{model_name.split('/')[-1]}_{dataset}_{args.enable_soft_thinking}_{args.num_samples}_"

@@ -17,7 +17,7 @@ This is the official implementation of the paper: [Soft Thinking: Unlocking the 
 </p>
 
 ## 🛠️ Re-development
-If you would like to build on top of this project, refer to `sglang_soft_thinking_pkg/README.md`, or review the differences from SGLang v0.4.6.post1 in `sglang_soft_thinking_pkg/diff_0.4.6.post1.txt`.
+If you would like to build on top of this project, refer to `sglang_soft_thinking_pkg/README.md`, or review the differences from SGLang v0.4.6.post1 in `sglang_soft_thinking_pkg/change_0.4.6.post1.diff`.
 
 ## 🎲 Soft Thinking with Random Perturbation
 

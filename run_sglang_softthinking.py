@@ -4,9 +4,12 @@ import time
 from tqdm import tqdm
 import argparse
 import os
+import shutil # 新增
+import sys   # 新增
 from transformers import AutoTokenizer
 from sglang.srt.sampling.sampling_params import SamplingParams
 from matheval import evaluator_map, set_client, AIMEEvaluator
+from modelscope.hub.snapshot_download import snapshot_download # 新增modelscope 依赖
 import asyncio
 import matheval
 import humanevaleval
@@ -25,6 +28,7 @@ def main():
     parser.add_argument('--dataset', type=str, choices=["math500", "aime2024", "aime2025", "gpqa_diamond", "gsm8k", "amc23", "humaneval", "mbpp", "livecodebench"], help='Name of dataset')
     parser.add_argument('--sampling_backend', type=str, choices=["pytorch", "flashinfer"], default="flashinfer", help='Sampling backend')
     parser.add_argument('--model_name', type=str, required=True, default="DeepSeek-R1-Distill-Qwen-1.5B", help='Model name or path')
+    parser.add_argument('--model_id_scope', type=str, default=None, help='Model ID on ModelScope Hub (e.g., qwen/QwQ-32B) for downloading if local path is missing') # 新增参数
     parser.add_argument('--num_gpus', type=int, default=8, help='GPU number (tensor parallel size, tp_size)')
     parser.add_argument('--cuda_graph_max_bs', type=int, default=None, help='Max number of batch runned in one time.')
     parser.add_argument('--max_running_requests', type=int, default=None, help='Max number of requests runned together.')
@@ -73,7 +77,7 @@ def main():
     parser.add_argument("--max_topk", type=int, default=15)
 
     args = parser.parse_args()
-
+    download_model_if_needed(args.model_name, args.model_id_scope)
     dataset = args.dataset
     model_name = args.model_name
     max_generated_tokens = args.max_generated_tokens
@@ -449,7 +453,45 @@ Test Cases:
             token=args.hf_token
         )
     print(results_statistics, flush=True)
-    
+    # 下载函数，直接弃用download.py文件
+def download_model_if_needed(local_model_path, modelscope_id):
+    """Checks if the model exists locally, otherwise downloads from ModelScope."""
+    config_path = os.path.join(local_model_path, "config.json")
+
+    if os.path.exists(config_path):
+        print(f"Model found locally at: {local_model_path}")
+        return # 模型已存在，直接返回
+
+    print(f"Model not found locally at {local_model_path}.")
+
+    if not modelscope_id:
+        print(f"Error: Model not found locally and --model_id_scope was not provided. Please download the model manually to {local_model_path} or provide the ModelScope ID.")
+        sys.exit(1) # 无法下载，退出脚本
+
+    print(f"Attempting to download model '{modelscope_id}' from ModelScope...")
+    try:
+        os.makedirs(local_model_path, exist_ok=True) # 确保目标目录存在
+
+        # 第 1 步: 下载模型到 ModelScope 的默认缓存目录
+        print("Step 1: Downloading model to cache...")
+        # 注意：这里的 ignore_patterns 和你的独立下载脚本保持一致
+        cache_path = snapshot_download(model_id=modelscope_id,
+                                        ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.gguf", "consolidated.safetensors"])
+
+        # 第 2 步: 将缓存目录中的文件递归复制到我们的目标目录
+        print(f"Step 2: Copying files from {cache_path} to {local_model_path}...")
+        shutil.copytree(cache_path, local_model_path, dirs_exist_ok=True)
+
+        print(f"Model successfully downloaded and copied to: {local_model_path}")
+
+    except Exception as e:
+        print(f"Error during model download or copy: {e}")
+        print(f"Please check the model ID '{modelscope_id}' and your network connection.")
+        # 可选：下载失败后删除可能不完整的目录
+        if os.path.exists(local_model_path):
+             print(f"Cleaning up potentially incomplete directory: {local_model_path}")
+             shutil.rmtree(local_model_path)
+        sys.exit(1) # 下载失败，退出脚本
 
 if __name__ == "__main__":
     main()

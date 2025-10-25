@@ -1,0 +1,28 @@
+# jwq：sk-eae55b7716a1419690c0b558dfa5f363
+# gj：sk-fccc836f85104f96bbcad2dfd433644b
+export OPENAI_API_KEY="sk-fccc836f85104f96bbcad2dfd433644b" 
+python run_sglang_softthinking.py \
+    --dataset "gsm8k" \
+    --model_name "/models/Qwen/QwQ-32B" \
+    --model_id_scope "qwen/QwQ-32B" \
+    --max_topk 10 \
+    --max_generated_tokens 32768 \
+    --temperature 0.6 \
+    --top_p 0.95 \
+    --top_k 30 \
+    --min_p 0.001 \
+    --after_thinking_temperature 0.6 \
+    --after_thinking_top_p 0.95 \
+    --after_thinking_top_k 30 \
+    --after_thinking_min_p 0.0 \
+    --early_stopping_entropy_threshold 0.01 \
+    --early_stopping_length_threshold 256 \
+    --mem_fraction_static 0.8 \
+    --start_idx 0 \
+    --end_idx 100000 \
+    --num_gpus 8 \
+    --num_samples 1 \
+    --enable_soft_thinking \
+    --use_llm_judge \
+    --api_base "https://api.deepseek.com/v1" \
+    --judge_model_name "deepseek-chat"

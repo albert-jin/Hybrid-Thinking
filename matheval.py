@@ -298,6 +298,7 @@ CONSTRUCTED_URL = None
 API_KEY = None
 HEADERS = None
 OPENAI_CLIENT = None
+LLM_CLIENT = None
 MODEL_NAME = None
 
 def set_client(api_base=None, deployment_name=None, api_version=None, api_key=None, model_name="gpt-4.1-2025-04-14"):
@@ -309,14 +310,23 @@ def set_client(api_base=None, deployment_name=None, api_version=None, api_key=No
     CONSTRUCTED_URL = f"{api_base}/openai/deployments/{deployment_name}/chat/completions?api-version={api_version}"
     API_KEY = api_key or os.getenv("OPENAI_API_KEY", "")
     MODEL_NAME = model_name
+    API_BASE = api_base # DeepSeek 或其他兼容 OpenAI 的 API 地址
     HEADERS = {
         "Content-Type": "application/json",
-        "api-key": api_key,
+        "api-key": api_key, # Consider changing to API_KEY if needed
     }
+
     if API_KEY:
+        # --- Make sure these lines use standard spaces for indentation ---
         print(f"Using API key: {API_KEY}")
-        OPENAI_CLIENT = OpenAI(api_key=API_KEY)
+        print(f"Using API base: {API_BASE}")
+        OPENAI_CLIENT = OpenAI(
+            api_key=API_KEY,
+            base_url=API_BASE
+        )
+        # --- End of corrected indentation ---
     else:
+        print("Warning: API_KEY is not set. LLM judge will fail.")
         OPENAI_CLIENT = None
     
 

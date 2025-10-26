@@ -77,8 +77,18 @@ from sglang.srt.utils import (
 from sglang.version import __version__
 
 logger = logging.getLogger(__name__)
-asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+# asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+# --- asyncio + uvloop 修复（Python 3.11+） ---
+import asyncio
+import uvloop
 
+asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+try:
+    # 确保主线程始终有事件循环
+    asyncio.get_running_loop()
+except RuntimeError:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 _is_cuda = is_cuda()
 
 

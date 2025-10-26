@@ -18,11 +18,26 @@ from huggingface_hub import HfApi
 import torch
 import time
 import convert_livecodebench
+import asyncio
+import uvloop
 
+# asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+
+# # 兼容 Python 3.11+ 的 asyncio 行为
+# try:
+#     asyncio.get_running_loop()
+# except RuntimeError:
+#     asyncio.set_event_loop(asyncio.new_event_loop())
 MATH_DATASETS = ["math500","aime2024","aime2025","gpqa_diamond","gsm8k","amc23"]
 CODE_DATASETS = ["humaneval","mbpp","livecodebench"]
 
 def main():
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
     # parse arguments
     parser = argparse.ArgumentParser(description='Process some parameters for text generation.')
     parser.add_argument('--dataset', type=str, choices=["math500", "aime2024", "aime2025", "gpqa_diamond", "gsm8k", "amc23", "humaneval", "mbpp", "livecodebench"], help='Name of dataset')

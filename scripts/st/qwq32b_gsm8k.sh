@@ -1,10 +1,4 @@
-# # jwq：xxx-sk-76661068bc9c45c7b364e1b1c965a355
-# # gj：xxx-sk-cef80e6978ef43248d99177af92fdc97
 
-PART1="sk-76661068"
-PART2="bc9c45c7b36"
-PART3="4e1b1c965a355"
-export OPENAI_API_KEY="${PART1}${PART2}${PART3}"
 python run_sglang_softthinking.py \
     --dataset "gsm8k" \
     --model_name "/root/autodl-tmp/Hybrid-Thinking/models/QwQ-32B/Qwen/QwQ-32B" \

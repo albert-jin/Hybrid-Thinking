@@ -88,7 +88,15 @@ class SamplingBatchInfo:
     # ==========
     # end of soft thinking
     # ==========
-
+    # ==========================================================
+    # == BEGIN: 新增 RL 状态字段 ================================
+    # ==========================================================
+    # 存储批次中每个请求的当前状态 (嵌入列表)
+    # 注意：这里存储的是原始高维嵌入的列表，QNetwork 内部会进行填充和降维
+    rl_states: Optional[List[List[torch.Tensor]]] = None
+    # ==========================================================
+    # == END: 新增 RL 状态字段 ==================================
+    # ==========================================================
     @classmethod
     def from_schedule_batch(cls, batch: ScheduleBatch, vocab_size: int):
         reqs = batch.reqs
@@ -211,7 +219,49 @@ class SamplingBatchInfo:
         # ==========
         # end of soft thinking
         # ==========
+        # ==========================================================
+        # == BEGIN: 新增 RL 状态提取逻辑 ============================
+        # ==========================================================
+        rl_states_list = []
+        # 假设 dqn_model 实例在某处可访问，或者其配置(state_max_len)可访问
+        # todo 为避免复杂依赖，我们暂时硬编码 max_len，或者更好的方式是从 req 中获取
+        # 假设 req 对象上已经有了 dqn_model 的配置
+        # TODO: 需要一种方式将 DQN 的配置 (state_max_len, include_prompt) 传递到这里
+        # 简化：我们先假设配置是固定的，或者在 Req 初始化时设置了
 
+        # 假设的默认值，这些值应该从主训练脚本传入 DQN，再由 DQN 传递到 SGLang
+        # 我们先用一个临时的默认值
+        default_state_max_len = 35 # 对应 DQN.__init__ 的默认值
+        default_include_prompt = False # 对应 DQN.__init__ 的默认值
+
+        for req in reqs:
+            # 尝试从 req 中获取 RL 配置，如果 SGLang 修改了 Req 以包含它们
+            state_max_len = getattr(req, "rl_state_max_len", default_state_max_len)
+            include_prompt = getattr(req, "rl_include_prompt_in_state", default_include_prompt)
+
+            if not hasattr(req, "embedding_history") or not hasattr(req, "prompt_embeddings"):
+                # 如果 Req 对象没有 history (例如在 prefill 阶段或刚开始)
+                # 我们需要定义一个初始状态
+                logger.warning(f"Req {req.rid} missing embedding_history or prompt_embeddings. Using empty state.")
+                embeddings_for_state = []
+            else:
+                # 根据配置决定状态包含哪些嵌入
+                if include_prompt:
+                    # 包含 Prompt: 拼接 Prompt 和 Reasoning 嵌入
+                    # 确保列表元素是 Tensor
+                    prompt_embeds = req.prompt_embeddings if req.prompt_embeddings else []
+                    reasoning_embeds = req.embedding_history if req.embedding_history else []
+                    embeddings_for_state = prompt_embeds + reasoning_embeds
+                else:
+                    # 不包含 Prompt: 只使用 Reasoning 嵌入
+                    embeddings_for_state = req.embedding_history if req.embedding_history else []
+
+            # 应用滑动窗口 (截取最后 max_len 个)
+            current_state_list = embeddings_for_state[-state_max_len:]
+            rl_states_list.append(current_state_list)
+        # ==========================================================
+        # == END: 新增 RL 状态提取逻辑 ==============================
+        # ==========================================================
         ret = cls(
             temperatures=temperatures,
             top_ps=top_ps,
@@ -246,6 +296,13 @@ class SamplingBatchInfo:
             custom_params=custom_params,
             custom_logit_processor=merged_custom_logit_processor,
             device=device,
+            # ==========================================================
+            # == BEGIN: 传递新增的 RL 状态字段 ==========================
+            # ==========================================================
+            rl_states=rl_states_list
+            # ==========================================================
+            # == END: 传递新增的 RL 状态字段 ============================
+            # ==========================================================
         )
         return ret
 

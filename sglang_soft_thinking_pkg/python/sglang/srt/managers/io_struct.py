@@ -666,7 +666,14 @@ class BatchStrOut:
     # ==========
     # end of soft thinking
     # ==========
-
+    # ==========================================================
+    # == BEGIN: 新增 RL 历史记录字段 ============================
+    # ==========================================================
+    output_embedding_history_list: List[List[Any]] = field(default_factory=list)
+    output_action_history_list: List[List[int]] = field(default_factory=list)
+    # ==========================================================
+    # == END: 新增 RL 历史记录字段 ==============================
+    # ==========================================================
 @dataclass
 class BatchMultimodalOut:
     # The request id

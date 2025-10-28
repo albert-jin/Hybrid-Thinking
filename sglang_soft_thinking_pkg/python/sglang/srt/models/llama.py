@@ -307,7 +307,7 @@ class LlamaModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
-        
+
         # ==========
         # begin of soft thinking
         # ==========
@@ -319,7 +319,7 @@ class LlamaModel(nn.Module):
             else:
                 hidden_states = self.embed_tokens.weighted_forward(
                     forward_batch.topk_probs, forward_batch.topk_indices
-                )  
+                )
         elif input_embeds is None:
             hidden_states = self.embed_tokens(input_ids)
         else:
@@ -341,7 +341,78 @@ class LlamaModel(nn.Module):
                 residual,
             )
         hidden_states, _ = self.norm(hidden_states, residual)
+        # ==========================================================
+        # == BEGIN: RL 修改 - 记录嵌入历史 ==========
+        # ==========================================================
+        # 假设 hidden_states 的形状是 [批次中的 token 数, 隐藏维度]
+        # 并且 forward_batch 包含将 token 映射回请求的信息。
 
+        # 检查 req_pool 是否存在
+        if hasattr(forward_batch, "req_pool") and len(forward_batch.req_pool) > 0:
+            batch_size = len(forward_batch.req_pool)
+            num_tokens_in_hidden_states = hidden_states.shape[0]
+
+            # --- 确定每个请求最后一个 token 在 hidden_states 中的索引 ---
+            last_token_indices_in_hs = [-1] * batch_size # 初始化为无效索引
+
+            # 方式一：尝试使用 cu_seq_lens (累积长度，常见于 VLLM/SGLang)
+            # 假设 cu_seq_lens 是 CPU 上的列表或可以 tolist()
+            if hasattr(forward_batch, "cu_seq_lens") and forward_batch.cu_seq_lens is not None:
+                try:
+                    # cu_seq_lens[i] 是前 i 个请求的总长度
+                    # 第 i 个请求的最后一个 token 索引是 cu_seq_lens[i+1] - 1
+                    # 确保 cu_seq_lens 是 tensor 并且在 CPU 上以便 .tolist()
+                    if isinstance(forward_batch.cu_seq_lens, torch.Tensor):
+                        cu_seq_lens_list = forward_batch.cu_seq_lens.cpu().tolist()
+                        last_token_indices_in_hs = [idx - 1 for idx in cu_seq_lens_list[1:]]
+                    elif isinstance(forward_batch.cu_seq_lens, list):
+                        last_token_indices_in_hs = [idx - 1 for idx in forward_batch.cu_seq_lens[1:]]
+
+                    # 验证索引
+                    if not last_token_indices_in_hs or not all(0 <= idx < num_tokens_in_hidden_states for idx in last_token_indices_in_hs):
+                        # logger.warning("Index derived from cu_seq_lens out of bounds. Falling back.")
+                        last_token_indices_in_hs = [-1] * batch_size # 重置
+                except Exception as e:
+                    # logger.warning(f"Error using cu_seq_lens: {e}. Falling back.")
+                    last_token_indices_in_hs = [-1] * batch_size # 重置
+
+            # 方式二：检查是否为 Decode 阶段的简化情况
+            # (仅当方式一失败或不可用时)
+            if last_token_indices_in_hs[0] == -1:
+                # 假设 Decode 阶段 hidden_states 形状为 [batch_size, (1,) hidden_dim]
+                if (len(hidden_states.shape) == 2 or (len(hidden_states.shape) == 3 and hidden_states.shape[1] == 1)) \
+                    and hidden_states.shape[0] == batch_size:
+                    last_token_indices_in_hs = list(range(batch_size))
+                    # else:
+                    # Prefill 阶段但没有 cu_seq_lens，情况复杂，暂时跳过
+                    # logger.warning("Prefill detected without cu_seq_lens, cannot determine last token index.")
+                    pass
+
+            # --- 根据计算出的索引，追加嵌入历史 ---
+            valid_indices_found = any(idx != -1 for idx in last_token_indices_in_hs)
+
+            if valid_indices_found:
+                # 如果 hidden_states 是 3D (B, 1, H)，先压缩
+                if len(hidden_states.shape) == 3 and hidden_states.shape[1] == 1:
+                    embeddings_to_process = hidden_states.squeeze(1) # 变为 [B, H]
+                else:
+                    embeddings_to_process = hidden_states # 已经是 [N, H]
+
+                for i, req in enumerate(forward_batch.req_pool):
+                    token_idx = last_token_indices_in_hs[i]
+                    if token_idx != -1 and hasattr(req, 'embedding_history'):
+                        if 0 <= token_idx < embeddings_to_process.shape[0]:
+                            embedding_to_store = embeddings_to_process[token_idx]
+                            # 存入 CPU 节省显存，并 detach
+                            req.embedding_history.append(embedding_to_store.detach().cpu())
+                        # else:
+                        # logger.warning(f"Calculated index {token_idx} out of bounds for request {req.rid}")
+            # else:
+            # logger.warning("Could not determine last token indices. Skipping embedding history update.")
+
+        # ==========================================================
+        # == END: RL 修改 - 记录嵌入历史 ============
+        # ==========================================================
         if len(aux_hidden_states) == 0:
             return hidden_states
 

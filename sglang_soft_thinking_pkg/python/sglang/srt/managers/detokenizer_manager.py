@@ -237,6 +237,15 @@ class DetokenizerManager:
             # ==========
             # end of soft thinking
             # ==========
+            # ==========================================================
+            # == BEGIN: 新增 RL 历史记录字段 ============================
+            # ==========================================================
+            # 确保这些字段已经添加到了 io_struct.py 的 BatchStrOut 定义中
+            output_embedding_history_list=recv_obj.output_embedding_history_list,
+            output_action_history_list=recv_obj.output_action_history_list
+            # ==========================================================
+            # == END: 新增 RL 历史记录字段 ==============================
+            # ==========================================================
         )
 
     def handle_multimodal_decode_req(self, recv_obj: BatchMultimodalDecodeReq):

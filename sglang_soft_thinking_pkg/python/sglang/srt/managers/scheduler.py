@@ -131,9 +131,22 @@ from sglang.srt.utils import (
     set_gpu_proc_affinity,
     set_random_seed,
     suppress_other_loggers,
+    MultiprocessingSerializer,
 )
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
-
+# ==========================================================
+# == BEGIN: 新增 RL DQN 模型导入 ==========================
+# ==========================================================
+# 导入DQN类，用于类型提示和RPC处理器中的初始化
+try:
+    from strategy_selector.strategy_model import DQN
+except ImportError:
+    # 如果导入失败，定义一个占位符
+    class DQN: pass
+    logger.warning("Could not import DQN from strategy_selector.strategy_model. Using placeholder.")
+# ==========================================================
+# == END: 新增 RL DQN 模型导入 ============================
+# ==========================================================
 expert_distribution_recorder = ExpertDistributionRecorder()
 
 logger = logging.getLogger(__name__)
@@ -172,6 +185,7 @@ class Scheduler(
         gpu_id: int,
         tp_rank: int,
         dp_rank: Optional[int],
+        rl_model: Optional[DQN] = None, # <--- 修改: 增加 rl_model 参数
     ):
         # Parse args
         self.server_args = server_args
@@ -190,7 +204,13 @@ class Scheduler(
         self.gpu_id = gpu_id
         self.enable_hierarchical_cache = server_args.enable_hierarchical_cache
         self.page_size = server_args.page_size
-
+        # ==========================================================
+        # == BEGIN: 新增 RL 模型实例存储 ==========================
+        # ==========================================================
+        self.rl_model = rl_model # 存储传递过来的 DQN 实例
+        # ==========================================================
+        # == END: 新增 RL 模型实例存储 ============================
+        # ==========================================================
         # Distributed rank info
         self.dp_size = server_args.dp_size
         self.attn_tp_rank, self.attn_tp_size, self.dp_rank = (
@@ -261,6 +281,7 @@ class Scheduler(
             tp_rank=tp_rank,
             dp_rank=dp_rank,
             nccl_port=port_args.nccl_port,
+            rl_model=self.rl_model, # <--- 修改: 将 rl_model 传递给 TpModelWorker
         )
 
         # Launch a draft worker for speculative decoding
@@ -292,6 +313,19 @@ class Scheduler(
             _,
             _,
         ) = self.tp_worker.get_worker_info()
+        # ==========================================================
+        # == BEGIN: RL 修改 - 获取 embedding_dim ====================
+        # ==========================================================
+        # 尝试从 worker 的 model_runner 获取 embedding_dim
+        try:
+            self.embedding_dim = self.tp_worker.worker.model_runner.model_config.hidden_size
+            logger.info(f"Scheduler: Successfully got embedding_dim: {self.embedding_dim}")
+        except Exception as e:
+            logger.error(f"Scheduler: Could not get embedding_dim from worker: {e}")
+            self.embedding_dim = None # 设置为 None，稍后在 init_rl_model 中再次尝试
+        # ==========================================================
+        # == END: RL 修改 - 获取 embedding_dim ======================
+        # ==========================================================
         self.tp_cpu_group = self.tp_worker.get_tp_cpu_group()
         self.attn_tp_cpu_group = self.tp_worker.get_attention_tp_cpu_group()
         self.pad_input_ids_func = self.tp_worker.get_pad_input_ids_func()
@@ -1714,19 +1748,54 @@ class Scheduler(
         logger.info(
             f"handle_rpc_request: {recv_req.method}, param: {recv_req.parameters}"
         )
-
+        # ==========================================================
+        # == BEGIN: RL 修改 - 修改 RPC 处理器以支持返回值 ===========
+        # ==========================================================
         success = True
-        exec = None
+        exec_info = None # 存储异常信息
+        return_data = None # 存储 RPC 调用的返回值
+
         try:
             func = getattr(self, recv_req.method)
-            func(recv_req.parameters)
+            # 调用 RPC 对应的方法，并捕获其返回值
+            return_data = func(recv_req.parameters)
         except Exception as e:
             success = False
-            exec = e
+            exec_info = e # 存储异常对象
             logger.error(f"Failed to call rpc {recv_req.method}: {str(e)}")
 
-        barrier()
-        return RpcReqOutput(success, "" if not exec else str(exec))
+        barrier() # 确保所有 TP 副本都执行了 RPC
+
+        # 序列化返回值或错误信息
+        message = ""
+        if exec_info:
+            message = get_exception_traceback() # 返回详细错误
+        elif return_data is not None:
+            # 如果有返回值 (例如 get_state_dict)，则序列化它
+            try:
+                message = MultiprocessingSerializer.serialize(return_data)
+            except Exception as e:
+                success = False
+                message = f"Failed to serialize return data for {recv_req.method}: {e}"
+                logger.error(message)
+
+        return RpcReqOutput(success, message)
+        # ==========================================================
+        # == END: RL 修改 - 修改 RPC 处理器 ========================
+        # ==========================================================
+        #
+        # success = True
+        # exec = None
+        # try:
+        #     func = getattr(self, recv_req.method)
+        #     func(recv_req.parameters)
+        # except Exception as e:
+        #     success = False
+        #     exec = e
+        #     logger.error(f"Failed to call rpc {recv_req.method}: {str(e)}")
+        #
+        # barrier()
+        # return RpcReqOutput(success, "" if not exec else str(exec))
 
     def save_remote_model(self, params):
         url = params["url"]
@@ -1743,7 +1812,68 @@ class Scheduler(
             pattern=params["pattern"],
             max_size=params["max_size"],
         )
+    # ==========================================================
+    # == BEGIN: 新增 RL RPC 处理器方法 =========================
+    # ==========================================================
 
+    def init_rl_model(self, params):
+        """
+        [RL] RPC Handler: 初始化 DQN 模型。
+        由 handle_rpc_request 调用。
+        """
+        logger.info(f"RPC: Received init_rl_model with params: {params.keys()}")
+
+        # 确保 embedding_dim 已被获取
+        if self.embedding_dim is None:
+            try:
+                self.embedding_dim = self.tp_worker.worker.model_runner.model_config.hidden_size
+                logger.info(f"RPC: Fetched embedding_dim: {self.embedding_dim}")
+            except Exception as e:
+                logger.error(f"RPC: Failed to get embedding_dim from tp_worker.worker: {e}")
+                raise # 抛出异常，让 handle_rpc_request 捕获
+
+        # 将 embedding_dim 添加到参数中
+        params["embedding_dim"] = self.embedding_dim
+
+        # 将初始化命令转发给 TpModelWorker
+        self.tp_worker.init_rl_model(params)
+        logger.info("RPC: init_rl_model call forwarded to TpModelWorker.")
+        return None # 此方法不返回数据
+
+    def get_rl_model_state_dict(self, params):
+        """
+        [RL] RPC Handler: 获取 DQN 模型的 state_dict。
+        由 handle_rpc_request 调用，并期望返回 state_dict。
+        """
+        logger.info("RPC: Received get_rl_model_state_dict")
+        # 从 TpModelWorker 获取 state_dict
+        state_dict = self.tp_worker.get_rl_model_state_dict()
+        logger.info("RPC: Got state_dict from TpModelWorker.")
+        return state_dict # 返回原始 state_dict，由 handle_rpc_request 序列化
+
+    def set_rl_model_state_dict(self, params):
+        """
+        [RL] RPC Handler: 设置 DQN 模型的 state_dict。
+        由 handle_rpc_request 调用。
+        """
+        logger.info("RPC: Received set_rl_model_state_dict")
+        serialized_state_dict = params["serialized_state_dict"]
+
+        # 反序列化 state_dict
+        try:
+            state_dict = MultiprocessingSerializer.deserialize(serialized_state_dict)
+        except Exception as e:
+            logger.error(f"RPC: Failed to deserialize state_dict: {e}")
+            raise # 抛出异常
+
+        # 将 state_dict 转发给 TpModelWorker
+        self.tp_worker.set_rl_model_state_dict(state_dict)
+        logger.info("RPC: set_rl_model_state_dict call forwarded to TpModelWorker.")
+        return None # 此方法不返回数据
+
+    # ==========================================================
+    # == END: 新增 RL RPC 处理器方法 ===========================
+    # ==========================================================
     def abort_request(self, recv_req: AbortReq):
         # Delete requests in the waiting queue
         to_del = []
@@ -2001,6 +2131,7 @@ def run_scheduler_process(
     tp_rank: int,
     dp_rank: Optional[int],
     pipe_writer,
+    rl_model: Optional[Any] = None, # <--- 修改: 增加 rl_model 参数
 ):
     # Generate the prefix
     if dp_rank is None:
@@ -2028,7 +2159,7 @@ def run_scheduler_process(
 
     # Create a scheduler and run the event loop
     try:
-        scheduler = Scheduler(server_args, port_args, gpu_id, tp_rank, dp_rank)
+        scheduler = Scheduler(server_args, port_args, gpu_id, tp_rank, dp_rank, rl_model)
         pipe_writer.send(
             {
                 "status": "ready",

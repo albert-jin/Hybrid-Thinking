@@ -56,7 +56,7 @@ def resolve_future_topk_info(
 ):
     # 直接比较（topk_indices 已经是 Tensor，且 None 已被替换为 -1）
     mask = topk_indices < 0
-    
+
     topk_probs[:] = torch.where(
         mask,
         future_topk_probs_map[torch.clamp(-topk_indices, min=0)],
@@ -81,9 +81,17 @@ class TpModelWorkerClient:
         tp_rank: int,
         dp_rank: Optional[int],
         nccl_port: int,
+        rl_model: Optional[Any] = None, # <--- 新增: 接收 rl_model
     ):
         # Load the model
-        self.worker = TpModelWorker(server_args, gpu_id, tp_rank, dp_rank, nccl_port)
+        self.worker = TpModelWorker(
+            server_args,
+            gpu_id,
+            tp_rank,
+            dp_rank,
+            nccl_port,
+            rl_model=rl_model # <--- 新增: 传递 rl_model 给 TpModelWorker
+        )
         self.max_running_requests = self.worker.max_running_requests
         self.device = self.worker.device
         self.gpu_id = gpu_id
@@ -107,7 +115,7 @@ class TpModelWorkerClient:
         self.scheduler_stream = torch.get_device_module(self.device).current_stream()
         if self.device == "cpu":
             self.scheduler_stream.synchronize = lambda: None  # No-op for CPU
-        
+
         # ==========
         # begin of soft thinking
         # ==========
@@ -193,29 +201,29 @@ class TpModelWorkerClient:
                 soft_thinking_mask = sampling_info.soft_thinking_modes  # [batch_size]
                 # TODO: 这个逻辑有问题，是string
                 think_end_mask = (input_ids == self.think_end_str)  # [batch_size]
-                
+
                 # Only process sequences where soft_thinking_modes=True and input_id=think_end_str
                 update_mask = soft_thinking_mask & think_end_mask
-                
+
                 if update_mask.any():
                     # Reset soft_thinking_modes for matching sequences
                     sampling_info.soft_thinking_modes[update_mask] = False
-                    
+
                     # Reinitialize topk_probs and topk_indices as one-hot for matching sequences
                     topk_probs[update_mask] = float('nan')
                     topk_indices[update_mask] = -1
-                    
+
                     # Set one-hot probabilities and store input_id at the first position
                     topk_probs[update_mask, 0] = 1.0  # One-hot probability at index 0
                     topk_indices[update_mask, 0] = input_ids[update_mask]
 
                 # Update future_topk_info
                 resolve_future_topk_info(
-                    topk_probs, topk_indices, 
-                    self.future_topk_probs_map, 
+                    topk_probs, topk_indices,
+                    self.future_topk_probs_map,
                     self.future_topk_indices_map,
                 )
-                
+
                 batch_len = len(model_worker_batch.seq_lens)
                 future_slice = slice(future_token_ids_ct + 1, future_token_ids_ct + 1 + batch_len)
                 self.future_topk_probs_map[future_slice] = topk_probs

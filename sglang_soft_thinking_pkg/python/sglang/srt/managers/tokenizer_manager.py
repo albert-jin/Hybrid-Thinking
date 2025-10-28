@@ -1064,8 +1064,24 @@ class TokenizerManager:
                 )
                 meta_info["output_topk_idx_list"] = (
                     recv_obj.output_topk_indices_list[i]
-                ) 
+                )
+            # ==========================================================
+            # == BEGIN: 新增 RL 历史记录提取 ============================
+            # ==========================================================
+            # 检查 recv_obj (即 BatchStrOut) 是否具有新添加的字段，
+            # 并将它们（属于第 i 个请求的）添加到 meta_info
+            if hasattr(recv_obj, "output_embedding_history_list") and recv_obj.output_embedding_history_list:
+                # 增加索引检查，防止批次处理中出现意外
+                if i < len(recv_obj.output_embedding_history_list):
+                    meta_info["embedding_history"] = recv_obj.output_embedding_history_list[i]
 
+            if hasattr(recv_obj, "output_action_history_list") and recv_obj.output_action_history_list:
+                # 增加索引检查
+                if i < len(recv_obj.output_action_history_list):
+                    meta_info["action_history"] = recv_obj.output_action_history_list[i]
+            # ==========================================================
+            # == END: 新增 RL 历史记录提取 ==============================
+            # ==========================================================
             if not isinstance(recv_obj, BatchEmbeddingOut):
                 meta_info.update(
                     {

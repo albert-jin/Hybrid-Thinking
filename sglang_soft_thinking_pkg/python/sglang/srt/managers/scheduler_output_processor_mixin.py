@@ -128,7 +128,7 @@ class SchedulerOutputProcessorMixin:
                     # begin of soft thinking
                     # ==========
                     if self.enable_soft_thinking:
-                        req.update_topk_info(logits_output, i)   
+                        req.update_topk_info(logits_output, i)
                     # ==========
                     # end of soft thinking
                     # ==========
@@ -274,21 +274,21 @@ class SchedulerOutputProcessorMixin:
                 req.grammar.finished = req.finished()
 
 
-            # ==========
-            # begin of soft thinking
-            # ==========
-            if self.enable_soft_thinking:
-                req.update_topk_info(logits_output, i)
-            # ==========
-            # end of soft thinking
-            # ==========
-        
+            # # ==========
+            # # begin of soft thinking
+            # # ==========
+            # if self.enable_soft_thinking:
+            #     req.update_topk_info(logits_output, i)
+            # # ==========
+            # # end of soft thinking
+            # # ==========
+
         if batch.next_batch_sampling_info:
             batch.next_batch_sampling_info.update_regex_vocab_mask()
             self.current_stream.synchronize()
             batch.next_batch_sampling_info.sampling_info_done.set()
         self.stream_output(batch.reqs, batch.return_logprob)
-        
+
         self.token_to_kv_pool_allocator.free_group_end()
 
         self.forward_ct_decode = (self.forward_ct_decode + 1) % (1 << 30)
@@ -522,14 +522,24 @@ class SchedulerOutputProcessorMixin:
                 output_token_ids_logprobs_idx
             ) = None
 
+        # # ==========
+        # # begin of soft thinking
+        # # ==========
+        # # Always initialize soft thinking output lists so they exist regardless of flag
+        # output_topk_probs_list = []
+        # output_topk_indices_list = []
+        # # ==========
+        # # end of soft thinking
+        # # ==========
         # ==========
-        # begin of soft thinking
+        # begin of soft thinking / RL Modification Start
         # ==========
-        # Always initialize soft thinking output lists so they exist regardless of flag
         output_topk_probs_list = []
         output_topk_indices_list = []
+        output_embedding_history_list = [] # <--- 新增
+        output_action_history_list = [] # <--- 新增
         # ==========
-        # end of soft thinking
+        # end of soft thinking / RL Modification End
         # ==========
 
         for req in reqs:
@@ -601,16 +611,47 @@ class SchedulerOutputProcessorMixin:
                     if output_hidden_states is None:
                         output_hidden_states = []
                     output_hidden_states.append(req.hidden_states)
+                # # ==========
+                # # begin of soft thinking
+                # # ==========
+                # if self.enable_soft_thinking:
+                #     output_topk_probs_list.append(req.get_output_topk_prob_list())
+                #     output_topk_indices_list.append(req.get_output_topk_idx_list())
+                # # ==========
+                # # end of soft thinking
+                # # ==========
                 # ==========
-                # begin of soft thinking
+                # begin of soft thinking / RL Modification Start
                 # ==========
-                if self.enable_soft_thinking:
+                if self.enable_soft_thinking: # 可能需要调整这个条件，或者始终提取
+                    # 提取 Soft Thinking 相关历史
                     output_topk_probs_list.append(req.get_output_topk_prob_list())
                     output_topk_indices_list.append(req.get_output_topk_idx_list())
-                # ==========
-                # end of soft thinking
-                # ==========
 
+                    # 提取 RL 相关历史
+                    if hasattr(req, 'embedding_history'):
+                        # 注意：这里直接传递列表，外部脚本可能需要将其转换为 Tensor
+                        output_embedding_history_list.append(req.embedding_history)
+                        # 清空历史记录，为下一次使用（如果 req 被复用）做准备
+                        req.embedding_history = []
+                    else:
+                        output_embedding_history_list.append([]) # 附加空列表
+
+                    if hasattr(req, 'action_history'):
+                        output_action_history_list.append(req.action_history)
+                        # 清空历史记录
+                        req.action_history = []
+                    else:
+                        output_action_history_list.append([]) # 附加空列表
+
+                else: # 如果没有启用 Soft Thinking/RL，附加空列表以保持结构一致
+                    output_topk_probs_list.append([])
+                    output_topk_indices_list.append([])
+                    output_embedding_history_list.append([])
+                    output_action_history_list.append([])
+                # ==========
+                # end of soft thinking / RL Modification End
+                # ==========
 
 
         # Send to detokenizer
@@ -645,13 +686,23 @@ class SchedulerOutputProcessorMixin:
                     output_token_ids_logprobs_val,
                     output_token_ids_logprobs_idx,
                     output_hidden_states,
+                    # # ==========
+                    # # begin of soft thinking
+                    # # ==========
+                    # output_topk_probs_list,
+                    # output_topk_indices_list,
+                    # # ==========
+                    # # end of soft thinking
+                    # # ==========
                     # ==========
-                    # begin of soft thinking
+                    # begin of soft thinking / RL Modification Start
                     # ==========
                     output_topk_probs_list,
                     output_topk_indices_list,
+                    output_embedding_history_list, # <--- 新增
+                    output_action_history_list, # <--- 新增
                     # ==========
-                    # end of soft thinking
+                    # end of soft thinking / RL Modification End
                     # ==========
                 )
             )

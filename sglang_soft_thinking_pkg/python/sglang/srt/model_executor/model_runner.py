@@ -20,7 +20,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Any # <--- 修改
 
 import torch
 import torch.distributed as dist
@@ -115,6 +115,7 @@ class ModelRunner:
         is_draft_worker: bool = False,
         req_to_token_pool: Optional[ReqToTokenPool] = None,
         token_to_kv_pool_allocator: Optional[TokenToKVPoolAllocator] = None,
+        rl_model: Optional[Any] = None, # <--- 新增: 接收 rl_model
     ):
         # Parse args
         self.model_config = model_config
@@ -137,7 +138,13 @@ class ModelRunner:
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
         self.use_mla_backend = self.model_config.attention_arch == AttentionArch.MLA
         self.attention_chunk_size = model_config.attention_chunk_size
-
+        # ==========================================================
+        # == BEGIN: 新增 RL 模型实例存储 ========================== # <--- 新增
+        # ==========================================================
+        self.rl_model = rl_model # 存储传递过来的 DQN 实例
+        # ==========================================================
+        # == END: 新增 RL 模型实例存储 ============================
+        # ==========================================================
         # Model-specific adjustment
         self.model_specific_adjustment()
 
@@ -200,7 +207,7 @@ class ModelRunner:
         )
 
         # Load the model
-        self.sampler = Sampler()
+        self.sampler = Sampler(rl_model=self.rl_model)
         self.load_model()
 
         # Apply torchao quantization
@@ -1002,8 +1009,8 @@ class ModelRunner:
         # ==========
         if self.enable_soft_thinking:
             return self.model.forward(
-                None, 
-                forward_batch.positions, 
+                None,
+                forward_batch.positions,
                 forward_batch,
             )
         else:
@@ -1099,8 +1106,9 @@ class ModelRunner:
         """
         # For duplex models with multiple output streams.
         if isinstance(logits_output, tuple):
+            # <--- 修改: 递归调用 self.sample 并只取元组的第一个返回值 (token_ids) ---
             return torch.stack(
-                [self.sample(values, forward_batch) for values in logits_output],
+                [self.sample(values, forward_batch)[0] for values in logits_output],
                 axis=-1,
             )
 
@@ -1111,20 +1119,43 @@ class ModelRunner:
         # begin of soft thinking
         # ==========
 
-        next_token_ids = self.sampler(
+        # next_token_ids = self.sampler(                         # <--- 这是原始行
+        next_token_ids, current_batch_actions = self.sampler(    # <--- 这是修改行
             logits_output,
             forward_batch.sampling_info,
             forward_batch.return_logprob,
             forward_batch.top_logprobs_nums,
-            forward_batch.token_ids_logprobs,  
+            forward_batch.token_ids_logprobs,
             enable_soft_thinking=self.enable_soft_thinking,
             add_noise_gumbel_softmax=self.add_noise_gumbel_softmax,
             add_noise_dirichlet=self.add_noise_dirichlet,
-        )   
+        )
 
         # ==========
         # end of soft thinking
         # ==========
+
+        # ==========================================================
+        # == BEGIN: 新增 RL 动作历史记录 ============================ # <--- 新增
+        # ==========================================================
+        # 将 sampler 返回的动作列表 (current_batch_actions) 存储到对应的 Req 对象中
+        if current_batch_actions is not None and hasattr(forward_batch, "req_pool"):
+            if len(current_batch_actions) == len(forward_batch.req_pool):
+                for i, req in enumerate(forward_batch.req_pool):
+                    if hasattr(req, 'action_history'): # 确保 Req 对象有 action_history 列表
+                        req.action_history.append(current_batch_actions[i])
+                    else:
+                        # 这是一个警告，理论上 Req 都应该在 __init__ 中被添加了此属性
+                        logger.warning(f"Req object {req.rid} missing 'action_history' attribute.")
+            else:
+                logger.warning(f"Length mismatch between returned actions ({len(current_batch_actions)}) "
+                               f"and requests ({len(forward_batch.req_pool)}). Skipping action recording.")
+        elif current_batch_actions is not None:
+            logger.warning("Sampler returned actions, but could not find req_pool in forward_batch. Skipping action recording.")
+        # ==========================================================
+        # == END: 新增 RL 动作历史记录 ==============================
+        # ==========================================================
+
         return next_token_ids
 
     @property

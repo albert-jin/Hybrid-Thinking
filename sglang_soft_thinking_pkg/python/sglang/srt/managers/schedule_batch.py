@@ -601,6 +601,36 @@ class Req:
         # ==========
         # end of soft thinking
         # ==========
+        # ===============================================
+        # == BEGIN: 新增 RL 状态和动作历史记录 ==========
+        # ===============================================
+        # 用于存储 LLM 生成的嵌入向量历史 (包括 prompt 部分，如果需要)
+        # 存储原始高维嵌入，考虑存放在 CPU 节省显存
+        self.embedding_history: List[torch.Tensor] = []
+
+        # 用于存储 RL 决策器在每一步推理中选择的动作 (0 或 1)
+        self.action_history: List[int] = []
+
+        # (可选) 用于存储原始 token IDs 历史，方便调试或后续处理
+        # self.token_history: List[int] = []
+        # ===============================================
+        # == END: 新增 RL 状态和动作历史记录 ============
+        # ===============================================
+        # --- 可能需要新增方法来更新和获取历史记录 ---
+    # 例如:
+    # def append_embedding(self, embedding: torch.Tensor):
+    #     # 考虑是否移到 CPU 存储
+    #     self.embedding_history.append(embedding.cpu())
+    #
+    # def append_action(self, action: int):
+    #     self.action_history.append(action)
+    #
+    # def get_rl_state_sequence(self, max_len: int, include_prompt: bool) -> List[torch.Tensor]:
+    #     # 根据 include_prompt 和 max_len 从 embedding_history 中提取状态
+    #     # 这个逻辑可以放在这里，也可以放在调用 DQN.select_action 之前处理
+    #     # ... 实现提取逻辑 ...
+    #     pass
+    # -----------------------------------------------
 
     @property
     def seqlen(self):

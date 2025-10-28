@@ -434,7 +434,83 @@ class Engine(EngineBase):
     def save_sharded_model(self, **kwargs):
         self.collective_rpc("save_sharded_model", **kwargs)
 
+    # ==========================================================
+    # == BEGIN: 新增 RL 模型 RPC 接口 ==========================
+    # ==========================================================
 
+    def init_rl_model(self, **rl_kwargs):
+        """
+        [RL] RPC 调用：命令 Scheduler 进程初始化 DQN 模型实例。
+
+        Args:
+            **rl_kwargs: 传递给 DQN 构造函数的所有参数
+                         (例如: reduced_dim, lstm_hidden_dim, learning_rate,
+                          state_max_len, include_prompt_in_state 等)
+        """
+        logger.info(f"Sending RPC call to initialize RL model with kwargs: {rl_kwargs}")
+        # embedding_dim 将由 Scheduler 进程在内部自动获取并添加
+        self.collective_rpc("init_rl_model", **rl_kwargs)
+        logger.info("RPC call init_rl_model completed.")
+
+    def get_rl_model_state_dict(self) -> Optional[Dict[str, Any]]:
+        """
+        [RL] RPC 调用：从 Scheduler 进程获取 DQN 策略网络(policy_net)的 state_dict。
+
+        Returns:
+            Dict[str, Any]: policy_net 的 state_dict.
+        """
+        logger.info("Sending RPC call to get RL model state_dict...")
+        # RPC 调用返回的是 RpcReqOutput 对象，其 message 字段包含序列化的结果
+        # 我们需要修改 collective_rpc 来返回 recv_req.message
+        # 暂时先假设 collective_rpc_with_return 存在，或者修改 collective_rpc
+
+        # --- 修改 collective_rpc ---
+        # 我们需要一个新的 RPC 调用方式，因为它需要 *接收* 数据
+        obj = RpcReqInput(method="get_rl_model_state_dict", parameters={})
+        self.send_to_rpc.send_pyobj(obj)
+        recv_req = self.send_to_rpc.recv_pyobj(zmq.BLOCKY)
+
+        assert isinstance(recv_req, RpcReqOutput)
+        assert recv_req.success, recv_req.message
+
+        if recv_req.message:
+            logger.info("Received serialized state_dict from Scheduler.")
+            # 反序列化 state_dict
+            try:
+                state_dict = MultiprocessingSerializer.deserialize(recv_req.message)
+                return state_dict
+            except Exception as e:
+                logger.error(f"Failed to deserialize state_dict from Scheduler: {e}")
+                return None
+        else:
+            logger.error("RPC call get_rl_model_state_dict returned no message.")
+            return None
+
+    def set_rl_model_state_dict(self, state_dict: Dict[str, Any]):
+        """
+        [RL] RPC 调用：将训练更新后的 state_dict 发送给 Scheduler 进程，
+        以更新其内部的 DQN 模型。
+
+        Args:
+            state_dict (Dict[str, Any]): policy_net 的新 state_dict.
+        """
+        logger.info("Serializing and sending RL model state_dict to Scheduler...")
+        try:
+            # 序列化 state_dict 以便通过 ZMQ 传递
+            serialized_state_dict = MultiprocessingSerializer.serialize(state_dict)
+        except Exception as e:
+            logger.error(f"Failed to serialize state_dict for RPC: {e}")
+            return
+
+        self.collective_rpc(
+            "set_rl_model_state_dict",
+            serialized_state_dict=serialized_state_dict
+        )
+        logger.info("RPC call set_rl_model_state_dict completed.")
+
+    # ==========================================================
+    # == END: 新增 RL 模型 RPC 接口 ============================
+    # ==========================================================
 def _set_envs_and_config(server_args: ServerArgs):
     # Set global environments
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"

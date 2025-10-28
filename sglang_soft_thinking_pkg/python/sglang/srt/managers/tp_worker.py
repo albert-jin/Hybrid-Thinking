@@ -52,6 +52,7 @@ class TpModelWorker:
         is_draft_worker: bool = False,
         req_to_token_pool: Optional[ReqToTokenPool] = None,
         token_to_kv_pool_allocator: Optional[TokenToKVPoolAllocator] = None,
+        rl_model: Optional[Any] = None, # <--- 新增: 接收 rl_model
     ):
         # Parse args
         self.tp_rank = tp_rank
@@ -91,6 +92,7 @@ class TpModelWorker:
             is_draft_worker=is_draft_worker,
             req_to_token_pool=req_to_token_pool,
             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+            rl_model=rl_model, # <--- 新增: 传递 rl_model 给 ModelRunner
         )
         if server_args.skip_tokenizer_init:
             self.tokenizer = self.processor = None

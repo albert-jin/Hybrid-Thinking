@@ -18,6 +18,7 @@ import dataclasses
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 import random
 import tempfile
 from typing import List, Literal, Optional
@@ -203,6 +204,14 @@ class ServerArgs:
     enable_soft_thinking: bool = False
     think_end_str: str = "</think>"
     max_topk: int = 30
+    # --- 添加下面两行 ---
+    early_stopping_entropy_threshold: float = field(
+        default=0.0, metadata={"help": "Entropy threshold for early stopping in soft thinking"}
+    )
+    early_stopping_length_threshold: int = field(
+        default=256, metadata={"help": "Length threshold for early stopping in soft thinking"}
+    )
+    # --- 添加结束 ---
     add_noise_dirichlet: bool = False
     add_noise_gumbel_softmax: bool = False
     # ==========
@@ -1182,7 +1191,7 @@ class ServerArgs:
             action="store_true",
             help="Enable soft thinking mode"
         )
-        
+
         parser.add_argument(
             "--think-end-str",
             type=str,

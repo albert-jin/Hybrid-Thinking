@@ -14,6 +14,9 @@ import logging # 新增
 
 from transformers import AutoTokenizer
 from sglang.srt.sampling.sampling_params import SamplingParams
+import asyncio
+import dataclasses
+import matheval #
 from matheval import evaluator_map, set_client # 保留评估器用于获取奖励
 # from modelscope.hub.snapshot_download import snapshot_download # 暂时保留，根据需要决定是否移除
 import torch
@@ -101,8 +104,8 @@ def main():
     parser.add_argument('--judge_model_name', type=str, default="deepseek-chat", help='Judge LLM model name (e.g., deepseek-chat)')
     parser.add_argument('--api_base', type=str, default="https://api.deepseek.com", help='API base URL for the judge model')
     parser.add_argument('--api_key_env', type=str, default="DEEPSEEK_API_KEY", help='Environment variable name for the judge API key')
-
-
+    parser.add_argument('--random_seed', type=int, default=42, help='Random seed for reproducibility')
+    parser.add_argument('--dataset', type=str, default="gsm8k", help='Name of the dataset (e.g., gsm8k) for evaluator mapping')
     args = parser.parse_args()
     logger.info(f"Arguments: {args}")
 
@@ -196,13 +199,29 @@ def main():
         # ==========================================================
         # == BEGIN: 关键修改 - 传递 RL 模型实例 =====================
         # ==========================================================
-        rl_model=dqn_model
+        # rl_model=dqn_model
         # ==========================================================
         # == END: 关键修改 - 传递 RL 模型实例 =======================
         # ==========================================================
     )
     logger.info("SGLang Engine Initialized.")
-
+    # --- 新增：命令 Scheduler 子进程初始化其本地的 RL 模型 ---
+    logger.info("Sending RPC call to initialize RL model in subprocess...")
+    sgl_engine.init_rl_model(
+        # 我们必须传递所有 DQN.__init__ 需要的参数
+        embedding_dim=embedding_dim,
+        reduced_dim=args.reduced_dim,
+        lstm_hidden_dim=args.lstm_hidden_dim,
+        num_lstm_layers=args.lstm_num_layers,
+        action_dim=2, # (硬编码为 2)
+        # 注意：子进程中的模型不需要 ReplayBuffer 或 Optimizer 参数
+        # 它只需要 QNetwork 的结构参数
+        state_max_len=args.state_max_len,
+        include_prompt_in_state=args.include_prompt_in_state,
+        device="cuda" # 子进程会在它自己的 GPU 上创建模型
+    )
+    logger.info("RPC init_rl_model complete.")
+    # --- 新增结束 ---
     # --- 初始化评估器 (用于奖励) ---
     api_key = os.getenv(args.api_key_env)
     if args.use_llm_judge and not api_key:
@@ -292,7 +311,25 @@ def main():
             if embedding_history is None or action_history is None:
                 logger.warning(f"Step {current_step}: Missing embedding_history or action_history in meta_info. Skipping step.")
                 continue
+            # --- 新增：获取 Prompt 长度并拆分嵌入 ---
+            # SGLang 默认会在 meta_info 中返回 prompt_token_len
+            prompt_token_len = meta_info.get("prompt_token_len")
 
+            if prompt_token_len is None or prompt_token_len < 0:
+                logger.warning(f"Step {current_step}: Invalid prompt_token_len ({prompt_token_len}) in meta_info. Skipping step.")
+                continue
+
+            # 验证历史记录的长度是否匹配
+            # embedding_history 包含 prompt + reasoning
+            # action_history 只包含 reasoning
+            if len(embedding_history) != prompt_token_len + len(action_history):
+                logger.warning(f"Step {current_step}: Mismatch lengths. Embeddings: {len(embedding_history)}, Prompt: {prompt_token_len}, Actions: {len(action_history)}. Skipping.")
+                continue
+
+            # 正确拆分
+            prompt_embeds = embedding_history[:prompt_token_len]
+            reasoning_embeds = embedding_history[prompt_token_len:]
+            # --- 新增结束 ---
         except Exception as e:
             logger.error(f"Error during SGLang generation for step {current_step}: {e}", exc_info=True)
             continue # 跳过这个错误的步骤
@@ -320,14 +357,12 @@ def main():
         # --- f. 存储经验 ---
         # TODO: 实现 prompt_embeddings 的获取和存储 (目前为空列表)
         trajectory = Trajectory(
-            prompt_embeddings=[], # 简化：暂时不存储 Prompt 嵌入
-            reasoning_embeddings=embedding_history, # 从 meta_info 获取
-            actions=action_history, # 从 meta_info 获取
+            prompt_embeddings=prompt_embeds,           # 使用正确拆分的 prompt 嵌入
+            reasoning_embeddings=reasoning_embeds,     # 使用正确拆分的 reasoning 嵌入
+            actions=action_history,                    # 从 meta_info 获取
             reward=final_reward,
             final_result=final_result,
-            start_reasoning_index=0 # 简化：假设 reasoning_embeddings 不含 prompt
-            # question_text=current_prompt_text, # (可选)
-            # ground_truth=ground_truth_answer # (可选)
+            start_reasoning_index=prompt_token_len     # 使用正确的索引
         )
 
         dqn_model.store_trajectory(trajectory)

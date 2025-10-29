@@ -1,5 +1,5 @@
 import logging
-from typing import List,Optional
+from typing import List, Optional, Tuple # <--- 添加 Tuple 到这里
 
 import torch
 import torch.distributed as dist
@@ -70,14 +70,17 @@ SYNC_TOKEN_IDS_ACROSS_TP = get_bool_env_var("SYNC_TOKEN_IDS_ACROSS_TP")
 # ==========================================================
 # --- RL Modification End ---
 class Sampler(nn.Module):
-    def __init__(self):
+    def __init__(self, rl_model=None):
         super().__init__()
         self.use_nan_detection = global_server_args_dict["enable_nan_detection"]
         self.tp_sync_group = get_tensor_model_parallel_group().device_group
 
         if global_server_args_dict["enable_dp_attention"]:
             self.tp_sync_group = get_attention_tp_group().device_group
-
+        # --- 添加下面两行，在 __init__ 中也设置全局变量 ---
+        global dqn_model
+        dqn_model = rl_model
+        # --- 添加结束 ---
     def forward(
         self,
         logits_output: LogitsProcessorOutput,
@@ -182,7 +185,13 @@ class Sampler(nn.Module):
             logits[:] = torch.softmax(logits, dim=-1)
             probs = logits # 注意：这里修改了 logits 本身
             # del logits # 现在 probs 就是修改后的 logits
-
+            # --- 新增: 如果需要返回 logprob，提前计算完整的 logprobs ---
+            logprobs_full = None
+            if return_logprob:
+                # 使用未经 top-p/top-k 等修改的原始概率 probs 计算 logprobs
+                # 注意： clamp 用于避免 log(0) 导致 -inf
+                logprobs_full = torch.log(probs.clamp(min=torch.finfo(probs.dtype).min))
+                # --- 新增结束 ---
             # --- RL Modification Start ---
             # ========== RL 决策步骤 ==========
             global dqn_model, dqn_imported_ok # 访问全局 DQN 实例
@@ -219,6 +228,7 @@ class Sampler(nn.Module):
             # 3. 创建动作掩码 (不变)
             rl_soft_mask = torch.tensor(current_batch_actions, device=probs.device, dtype=torch.bool)
             rl_discrete_mask = ~rl_soft_mask
+            discrete_effective_mask = rl_discrete_mask | (rl_soft_mask & ~enable_soft_thinking) # <--- 这个掩码很重要
 
             # 4. 记录动作 (在 Scheduler 中完成)
 
@@ -439,23 +449,58 @@ class Sampler(nn.Module):
 
         # Attach logprobs to logits_output (in-place modification)
         # todo 注意: logprob 计算现在需要更小心，因为它应该基于 RL 决策之前的 probs
-        if return_logprob:
-            if any(x > 0 for x in top_logprobs_nums):
-                (
-                    logits_output.next_token_top_logprobs_val,
-                    logits_output.next_token_top_logprobs_idx,
-                ) = get_top_logprobs(logprobs, top_logprobs_nums)
+        if return_logprob and logprobs_full is not None:
+            # --- 这是替换后的代码块 ---
+            # 1. 初始化所有 Logprob 输出为 0 或空列表
+            batch_size = logprobs_full.shape[0]
+            device = logprobs_full.device
+            dtype = logprobs_full.dtype
 
-            if any(x is not None for x in token_ids_logprobs):
-                (
-                    logits_output.next_token_token_ids_logprobs_val,
-                    logits_output.next_token_token_ids_logprobs_idx,
-                ) = get_token_ids_logprobs(logprobs, token_ids_logprobs)
+            # 初始化 next_token_logprobs 为 0
+            logits_output.next_token_logprobs = torch.zeros(batch_size, device=device, dtype=dtype)
+            # 初始化 top_logprobs 为空列表
+            logits_output.next_token_top_logprobs_val = [[] for _ in range(batch_size)]
+            logits_output.next_token_top_logprobs_idx = [[] for _ in range(batch_size)]
+            # 初始化 token_ids_logprobs 为空列表
+            logits_output.next_token_token_ids_logprobs_val = [[] for _ in range(batch_size)]
+            logits_output.next_token_token_ids_logprobs_idx = [[] for _ in range(batch_size)]
 
-            logits_output.next_token_logprobs = logprobs[
-                torch.arange(len(batch_next_token_ids), device=sampling_info.device),
-                batch_next_token_ids,
-            ]
+            # 2. 只为执行了离散采样的请求计算并填充 Logprobs
+            if discrete_effective_mask.any():
+                # 获取离散请求对应的原始 logprobs 和选中的 token IDs
+                indices_discrete = torch.where(discrete_effective_mask)[0]
+                logprobs_discrete = logprobs_full[discrete_effective_mask]
+                batch_next_token_ids_discrete = batch_next_token_ids[discrete_effective_mask] # 这是离散采样得到的ID
+
+                # a. 计算 next_token_logprobs (选定 token 的 logprob)
+                next_logprobs_discrete = logprobs_discrete[
+                    torch.arange(logprobs_discrete.shape[0], device=device),
+                    batch_next_token_ids_discrete,
+                ]
+                # 使用索引将计算结果放回 logits_output
+                logits_output.next_token_logprobs[indices_discrete] = next_logprobs_discrete
+
+                # b. 计算 top_logprobs (如果需要)
+                # 注意：需要从 sampling_info 中获取离散请求对应的 top_logprobs_nums
+                top_logprobs_nums_discrete = [top_logprobs_nums[i] for i in indices_discrete.tolist()]
+                if any(k > 0 for k in top_logprobs_nums_discrete):
+                    top_vals, top_idxs = get_top_logprobs(logprobs_discrete, top_logprobs_nums_discrete)
+                    for i, original_idx in enumerate(indices_discrete.tolist()):
+                        logits_output.next_token_top_logprobs_val[original_idx] = top_vals[i]
+                        logits_output.next_token_top_logprobs_idx[original_idx] = top_idxs[i]
+
+                # c. 计算 token_ids_logprobs (如果需要)
+                # 注意：需要从 sampling_info 中获取离散请求对应的 token_ids_logprobs
+                token_ids_logprobs_discrete = [token_ids_logprobs[i] for i in indices_discrete.tolist()]
+                if any(ids is not None for ids in token_ids_logprobs_discrete):
+                    token_vals, token_idxs = get_token_ids_logprobs(logprobs_discrete, token_ids_logprobs_discrete)
+                    for i, original_idx in enumerate(indices_discrete.tolist()):
+                        logits_output.next_token_token_ids_logprobs_val[original_idx] = token_vals[i]
+                        logits_output.next_token_token_ids_logprobs_idx[original_idx] = token_idxs[i]
+
+            # 对于 Soft Thinking 的请求 (discrete_effective_mask 为 False)，
+            # Logprob 值将保持为初始化的 0 或空列表
+            # --- 替换结束 ---
 
         if SYNC_TOKEN_IDS_ACROSS_TP or sampling_info.grammars:
             # For performance reasons, SGLang does not sync the final token IDs across TP ranks by default.

@@ -15,7 +15,7 @@
 
 import logging
 import threading
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any, Union
 
 import torch
 
@@ -240,3 +240,32 @@ class TpModelWorker:
             recv_req.name, recv_req.truncate_size
         )
         return parameter
+    # ==========================================================
+    # == BEGIN: 新增 RL RPC 处理器方法 =========================
+    # ==========================================================
+
+    def init_rl_model(self, params: dict):
+        """
+        [RL] RPC Handler: 将初始化命令转发给 ModelRunner。
+        """
+        logger.info("TpModelWorker: Forwarding init_rl_model to ModelRunner.")
+        # ModelRunner 将负责创建 DQN 实例
+        self.model_runner.init_rl_model(params)
+
+    def get_rl_model_state_dict(self):
+        """
+        [RL] RPC Handler: 从 ModelRunner 获取 state_dict。
+        """
+        logger.info("TpModelWorker: Forwarding get_rl_model_state_dict to ModelRunner.")
+        return self.model_runner.get_rl_model_state_dict()
+
+    def set_rl_model_state_dict(self, state_dict: dict):
+        """
+        [RL] RPC Handler: 将 state_dict 转发给 ModelRunner。
+        """
+        logger.info("TpModelWorker: Forwarding set_rl_model_state_dict to ModelRunner.")
+        self.model_runner.set_rl_model_state_dict(state_dict)
+
+    # ==========================================================
+    # == END: 新增 RL RPC 处理器方法 ===========================
+    # ==========================================================

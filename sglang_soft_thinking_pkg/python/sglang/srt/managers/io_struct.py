@@ -610,7 +610,14 @@ class BatchTokenIDOut:
     # ==========
     # end of soft thinking
     # ==========
-
+    # ==========================================================
+    # == BEGIN: 新增 RL 历史记录字段 ============================ # <--- 添加开始
+    # ==========================================================
+    output_embedding_history_list: List[List[Any]] = field(default_factory=list)
+    output_action_history_list: List[List[int]] = field(default_factory=list)
+    # ==========================================================
+    # == END: 新增 RL 历史记录字段 ============================== # <--- 添加结束
+    # ==========================================================
 
 @dataclass
 class BatchMultimodalDecodeReq:

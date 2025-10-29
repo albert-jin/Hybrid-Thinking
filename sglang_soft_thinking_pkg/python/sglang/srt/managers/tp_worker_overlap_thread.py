@@ -18,7 +18,7 @@ import logging
 import signal
 import threading
 from queue import Queue
-from typing import Optional
+from typing import Optional,Any
 
 import psutil
 import torch
@@ -333,7 +333,37 @@ class TpModelWorkerClient:
 
     def get_weights_by_name(self, recv_req: GetWeightsByNameReqInput):
         return self.worker.get_weights_by_name(recv_req)
+    # ==========================================================
+    # == BEGIN: 新增 RL RPC 处理器方法 (转发给 self.worker) ======
+    # ==========================================================
 
+    def init_rl_model(self, params: dict):
+        """
+        [RL] RPC Handler: 将初始化命令转发给内部的 TpModelWorker 实例。
+        """
+        logger.info("TpModelWorkerClient: Forwarding init_rl_model to self.worker.")
+        # 注意：这里我们不能在 forward 线程中执行此操作，
+        # 因为它是一个一次性的初始化调用，而不是批处理。
+        # 我们在 Scheduler 线程中直接调用它。
+        self.worker.init_rl_model(params)
+
+    def get_rl_model_state_dict(self):
+        """
+        [RL] RPC Handler: 从内部的 TpModelWorker 实例获取 state_dict。
+        """
+        logger.info("TpModelWorkerClient: Forwarding get_rl_model_state_dict to self.worker.")
+        return self.worker.get_rl_model_state_dict()
+
+    def set_rl_model_state_dict(self, state_dict: dict):
+        """
+        [RL] RPC Handler: 将 state_dict 转发给内部的 TpModelWorker 实例。
+        """
+        logger.info("TpModelWorkerClient: Forwarding set_rl_model_state_dict to self.worker.")
+        self.worker.set_rl_model_state_dict(state_dict)
+
+    # ==========================================================
+    # == END: 新增 RL RPC 处理器方法 ===========================
+    # ==========================================================
     def __delete__(self):
         self.input_queue.put((None, None))
         self.copy_queue.put((None, None, None))

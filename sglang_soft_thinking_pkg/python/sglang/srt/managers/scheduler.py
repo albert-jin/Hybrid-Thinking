@@ -185,7 +185,7 @@ class Scheduler(
         gpu_id: int,
         tp_rank: int,
         dp_rank: Optional[int],
-        rl_model: Optional[DQN] = None, # <--- 修改: 增加 rl_model 参数
+        # rl_model: Optional[DQN] = None, # <--- 修改: 增加 rl_model 参数
     ):
         # Parse args
         self.server_args = server_args
@@ -207,7 +207,7 @@ class Scheduler(
         # ==========================================================
         # == BEGIN: 新增 RL 模型实例存储 ==========================
         # ==========================================================
-        self.rl_model = rl_model # 存储传递过来的 DQN 实例
+        self.rl_model = None # 将在 RPC(init_rl_model) 调用时被创建
         # ==========================================================
         # == END: 新增 RL 模型实例存储 ============================
         # ==========================================================
@@ -2131,7 +2131,7 @@ def run_scheduler_process(
     tp_rank: int,
     dp_rank: Optional[int],
     pipe_writer,
-    rl_model: Optional[Any] = None, # <--- 修改: 增加 rl_model 参数
+    # rl_model: Optional[Any] = None, # <--- 修改: 增加 rl_model 参数
 ):
     # Generate the prefix
     if dp_rank is None:
@@ -2159,7 +2159,7 @@ def run_scheduler_process(
 
     # Create a scheduler and run the event loop
     try:
-        scheduler = Scheduler(server_args, port_args, gpu_id, tp_rank, dp_rank, rl_model)
+        scheduler = Scheduler(server_args, port_args, gpu_id, tp_rank, dp_rank)
         pipe_writer.send(
             {
                 "status": "ready",

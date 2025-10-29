@@ -99,7 +99,11 @@ UNBALANCED_MODEL_LOADING_TIMEOUT_S = 300
 
 logger = logging.getLogger(__name__)
 
-
+try:
+    from strategy_selector.strategy_model import DQN
+except ImportError:
+    class DQN: pass # 如果导入失败则使用占位符
+    logger.warning("在 model_runner 中无法从 strategy_selector.strategy_model 导入 DQN。正在使用占位符。")
 class ModelRunner:
     """ModelRunner runs the forward passes of the models."""
 
@@ -1183,7 +1187,81 @@ class ModelRunner:
             f"Save sharded model to {path} with pattern {pattern} and max_size {max_size}"
         )
         ShardedStateLoader.save_model(self.model, path, pattern, max_size)
+    # ==========================================================
+    # == BEGIN: 新增 RL RPC 处理器实现 =========================
+    # ==========================================================
 
+    def init_rl_model(self, params: dict):
+        """
+        [RL] RPC Handler 实现: 创建 DQN 实例。
+        """
+        if self.rl_model is not None:
+            logger.warning("RPC init_rl_model 被调用，但 rl_model 已存在。将重新初始化。")
+            # 可选：决定是否阻止重新初始化或采取不同处理方式。
+
+        logger.info(f"ModelRunner: 正在使用参数初始化 DQN 模型: {params.keys()}")
+        try:
+            # 重要：确保 DQN 模型在正确的设备上创建
+            params["device"] = self.device
+            self.rl_model = DQN(**params)
+            logger.info(f"ModelRunner: DQN 模型在设备 {self.device} 上成功初始化。")
+
+            # 关键：使用新创建的模型更新 Sampler 实例
+            if hasattr(self, 'sampler') and self.sampler is not None:
+                self.sampler.set_rl_model(self.rl_model)
+                logger.info("ModelRunner: 已使用初始化的 DQN 模型更新 Sampler。")
+            else:
+                # 这通常发生在 ModelRunner 的 __init__ 阶段，此时 sampler 还未在 initialize() 中创建
+                logger.warning("ModelRunner: 调用 init_rl_model 时 Sampler 尚未初始化。"
+                               "Sampler 将稍后在 initialize() 中使用此模型创建。")
+
+        except Exception as e:
+            logger.error(f"ModelRunner: 初始化 DQN 模型失败: {e}", exc_info=True)
+            # 重新抛出异常，使 RPC 调用明确失败
+            raise
+
+    def get_rl_model_state_dict(self):
+        """
+        [RL] RPC Handler 实现: 返回 policy_net 的 state_dict。
+        """
+        if self.rl_model is None:
+            logger.error("RPC get_rl_model_state_dict 被调用，但 rl_model 未初始化。")
+            raise ValueError("RL 模型未初始化。")
+            # 或者返回 None，但抛出错误可能更清晰
+
+        logger.info("ModelRunner: 返回 policy_net state_dict。")
+        # 为兼容性，在获取 state_dict 前确保模型在 CPU 上，然后移回
+        # 虽然在这里不那么关键（因为它在同一进程组内），但这是个好习惯。
+        original_device = self.rl_model.device
+        self.rl_model.policy_net.cpu()
+        state_dict = self.rl_model.policy_net.state_dict()
+        self.rl_model.policy_net.to(original_device)
+        return state_dict
+
+    def set_rl_model_state_dict(self, state_dict: dict):
+        """
+        [RL] RPC Handler 实现: 将 state_dict 加载到 policy_net 中。
+        """
+        if self.rl_model is None:
+            logger.error("RPC set_rl_model_state_dict 被调用，但 rl_model 未初始化。")
+            raise ValueError("RL 模型未初始化。")
+
+        try:
+            # 确保 state_dict 被加载到正确的设备
+            self.rl_model.policy_net.load_state_dict(state_dict)
+            self.rl_model.policy_net.to(self.rl_model.device) # 确保它在正确的设备上
+            # 关键地，同时更新目标网络（如果直接使用 DQN 的方法不可行）
+            self.rl_model.target_net.load_state_dict(self.rl_model.policy_net.state_dict())
+            self.rl_model.target_net.eval()
+
+            logger.info("ModelRunner: 成功将 state_dict 加载到 policy_net 并更新了 target_net。")
+        except Exception as e:
+            logger.error(f"ModelRunner: 加载 state_dict 失败: {e}", exc_info=True)
+            raise
+
+    # ==========================================================
+    # == END: 新增 RL RPC 处理器实现 ===========================
+    # ==========================================================
 
 def _model_load_weights_direct(model, named_tensors: List[Tuple[str, torch.Tensor]]):
     params_dict = dict(model.named_parameters())

@@ -3,7 +3,7 @@ python ./models/download.py --model_name "Qwen/QwQ-32B"
 export OPENAI_API_KEY=""
 
 python run_sglang_softthinking.py \
-    --dataset "aime2024" \
+    --dataset "gsm8k" \
     --model_name "./models/Qwen/QwQ-32B" \
     --max_topk 10 \
     --max_generated_tokens 32768 \

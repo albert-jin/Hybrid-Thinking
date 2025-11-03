@@ -1059,12 +1059,17 @@ class TokenizerManager:
                 )
 
             if self.enable_soft_thinking:
-                meta_info["output_topk_prob_list"] = (
+                meta_info["output_topk_probs_list"] = (  # <--- 修复：添加了 's'
                     recv_obj.output_topk_probs_list[i]
                 )
                 meta_info["output_topk_idx_list"] = (
                     recv_obj.output_topk_indices_list[i]
-                ) 
+                )
+                # <--- 修复：添加 H_t 列表 ---
+                meta_info["output_last_hidden_state_list"] = (
+                    recv_obj.output_last_hidden_state_list[i]
+                )
+                # <--- 修复结束 ---
 
             if not isinstance(recv_obj, BatchEmbeddingOut):
                 meta_info.update(

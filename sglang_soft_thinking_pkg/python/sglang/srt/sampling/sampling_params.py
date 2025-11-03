@@ -13,8 +13,7 @@
 # ==============================================================================
 """Sampling parameters for text generation."""
 import torch
-from typing import Any, Dict, List, Optional, Union
-
+from typing import Any, List, Optional, Union, Dict # <-- 确保 'Any' 已导入
 _SAMPLING_EPS = 1e-6
 
 
@@ -48,6 +47,11 @@ class SamplingParams:
         early_stopping_length_threshold: int = 200,
         think_end_str: Optional[str] = None,
         gumbel_softmax_temperature: float = 1.0,
+        # --- === 插入新代码 (开始) === ---
+        # 0 = Soft (默认), 1 = Hard
+        soft_hard_action: Optional[int] = None,
+        ground_truth: Any = None,
+        # --- === 插入新代码 (结束) === ---
         # ==========
         # end of soft thinking
         # ==========
@@ -91,9 +95,13 @@ class SamplingParams:
         self.dirichlet_alpha = dirichlet_alpha
         # Gumbel-softmax sampling parameters
         self.gumbel_softmax_temperature = gumbel_softmax_temperature
+        self.ground_truth = ground_truth
         # ==========
         # end of soft thinking
         # ==========
+        # --- === 插入新代码 (开始) === ---
+        self.soft_hard_action = soft_hard_action
+        # --- === 插入新代码 (结束) === ---
         self.frequency_penalty = frequency_penalty
         self.presence_penalty = presence_penalty
         self.repetition_penalty = repetition_penalty
@@ -208,4 +216,4 @@ class SamplingParams:
 
     def post_init_soft_thinking_mode(self):
         # TODO: 换成cpu的，然后init的时候再传输，topk也是一样，会造成主卡显存不足
-        self.soft_thinking_mode = torch.tensor(True, dtype=torch.bool, device='cuda') 
+        self.soft_thinking_mode = torch.tensor(True, dtype=torch.bool, device='cuda')

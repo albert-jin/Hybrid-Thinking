@@ -179,9 +179,16 @@ class TpModelWorker:
         self,
         model_worker_batch: ModelWorkerBatch,
         skip_sample: bool = False,
-    ) -> Tuple[LogitsProcessorOutput, Optional[torch.Tensor]]:
+    ) -> Tuple[LogitsProcessorOutput, Optional[torch.Tensor]]: # (PPO): 返回值类型没变，但第一个元素现在是元组
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
-        logits_output = self.model_runner.forward(forward_batch)
+
+        # --- === 修改点 (PPO): 接收 (logits, H_t) 元组 === ---
+        # model_outputs 现在是一个元组: (logits_output, last_hidden_state)
+        model_outputs = self.model_runner.forward(forward_batch)
+
+        # 从元组中解包 logits，用于采样
+        logits_output = model_outputs[0]
+        # --- === 修改结束 === ---
 
         if model_worker_batch.launch_done is not None:
             model_worker_batch.launch_done.set()
@@ -189,9 +196,14 @@ class TpModelWorker:
         if skip_sample:
             next_token_ids = None
         else:
+            # 使用解包后的 logits 进行采样 (不变)
             next_token_ids = self.model_runner.sample(logits_output, model_worker_batch)
 
-        return logits_output, next_token_ids
+        # --- === 修改点 (PPO): 返回完整的 (logits, H_t) 元组 === ---
+        # 我们将完整的 model_outputs 元组，而不是解包的 logits_output，
+        # 传递给调用者 (scheduler.py)
+        return model_outputs, next_token_ids
+        # --- === 修改结束 === ---
 
     def forward_batch_embedding(self, model_worker_batch: ModelWorkerBatch):
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)

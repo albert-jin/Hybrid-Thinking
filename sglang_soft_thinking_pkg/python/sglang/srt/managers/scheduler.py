@@ -26,8 +26,7 @@ from concurrent import futures
 from dataclasses import dataclass
 from http import HTTPStatus
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Tuple, Union
-
+from typing import Any, Dict, List, Optional, Tuple, Union # <-- PPO 修改点：添加 Any
 import psutil
 import setproctitle
 import torch
@@ -133,7 +132,18 @@ from sglang.srt.utils import (
     suppress_other_loggers,
 )
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
-
+# --- === PPO 阶段四 导入 (开始) === ---
+import torch.nn.functional as F  # <-- (PPO): 新增
+import torch.optim as optim
+from transformers import AutoConfig
+import matheval                   # <-- (PPO): 新增
+# 假设 ppo_agent_model.py 在 Hybrid-Thinking 根目录
+import sys
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../../.."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+from ppo_agent_model import ActorCriticAgent
+# --- === PPO 阶段四 导入 (结束) === ---
 expert_distribution_recorder = ExpertDistributionRecorder()
 
 logger = logging.getLogger(__name__)
@@ -145,7 +155,9 @@ RECORD_STEP_TIME = get_bool_env_var("SGLANG_RECORD_STEP_TIME")
 
 @dataclass
 class GenerationBatchResult:
-    logits_output: LogitsProcessorOutput
+    # === PPO 修改点：重命名字段以接收 (logits, H_t) 元组 ===
+    model_outputs: Any # (原: logits_output: LogitsProcessorOutput)
+    # === PPO 修改结束 ===
     next_token_ids: List[int]
     extend_input_len_per_req: List[int]
     extend_logprob_start_len_per_req: List[int]
@@ -430,8 +442,87 @@ class Scheduler(
         # ==========
         # begin of soft thinking
         # ==========
+        # (PPO): 我们将 enable_soft_thinking 和 max_topk 移到下面的 PPO Agent 加载逻辑中
+
+        # --- === PPO 阶段四 加载 Agent (开始) === ---
         self.enable_soft_thinking = server_args.enable_soft_thinking
         self.max_topk = server_args.max_topk
+        self.ppo_agent = None # 默认为 None
+
+        if self.enable_soft_thinking:
+            logger.info("Soft Thinking (PPO Mode) Enabled. Loading PPO Agent...")
+            try:
+                # 1. 动态获取 LLM 的 hidden_size
+                logger.info(f"Loading model config from: {server_args.model_path}")
+                model_config = AutoConfig.from_pretrained(
+                    server_args.model_path,
+                    trust_remote_code=server_args.trust_remote_code
+                )
+                dynamic_hidden_dim = model_config.hidden_size
+                logger.info(f"Detected model hidden dimension: {dynamic_hidden_dim}")
+
+                # 2. 实例化 Agent (来自 ppo_agent_model.py)
+                self.ppo_agent = ActorCriticAgent(
+                    hidden_state_dim=dynamic_hidden_dim,
+                    logits_feature_dim=10, # 必须与 L_t 维度匹配 (K=10)
+                    projection_dim=128
+                ).to(self.device)
+
+                # 3. 实例化优化器
+                # --- === PPO 修复 (开始): 转换 Agent 的 dtype === ---
+                # 获取 LLM 的 dtype (例如 bfloat16)
+                llm_dtype = self.tp_worker.worker.model_runner.dtype
+                # 将 PPO Agent 转换为与 LLM 相同的 dtype
+                # 这将使 projection_layer.weight 变为 bfloat16
+                self.ppo_agent = self.ppo_agent.to(llm_dtype)
+                self.ppo_dtype = llm_dtype
+                # <--- 新增：加载 PPO Agent Checkpoint ---
+                # 我们假设 sglang.Engine 会传递这个参数
+                self.ppo_agent_checkpoint_path = getattr(server_args, "ppo_agent_checkpoint_path", None)
+
+                if self.ppo_agent_checkpoint_path and os.path.exists(self.ppo_agent_checkpoint_path):
+                    try:
+                        logger.info(f"PPO: 正在从以下路径加载预训练的 Agent 权重: {self.ppo_agent_checkpoint_path}")
+                        # 加载权重, 确保映射到正确的设备
+                        state_dict = torch.load(self.ppo_agent_checkpoint_path, map_location=self.device)
+                        self.ppo_agent.load_state_dict(state_dict)
+                        logger.info("PPO: Agent 权重加载成功。")
+                    except Exception as e:
+                        logger.error(f"PPO: 加载 Agent 权重失败. 错误: {e}. 将使用随机初始化的 Agent。")
+                elif self.ppo_agent_checkpoint_path:
+                    logger.warning(f"PPO: 未找到 Checkpoint 文件: {self.ppo_agent_checkpoint_path}. 将使用随机初始化的 Agent。")
+                else:
+                    # 这是训练模式（train_ppo_controller.py）的正常情况
+                    logger.info("PPO: 未提供 Checkpoint 路径。将使用随机初始化的 Agent（适用于训练）。")
+
+                # 将 Agent 默认设置为评估模式。训练脚本会自己调用 .train()
+                self.ppo_agent.eval()
+                # <--- 新增结束 ---
+                logger.info(f"PPO Agent dtype converted to: {llm_dtype}")
+                # --- === PPO 修复 (结束) === ---
+
+                # 3. 实例化优化器
+                # (优化器现在将处理 bf16 权重)
+                self.ppo_optimizer = optim.Adam(self.ppo_agent.parameters(), lr=1e-5)
+
+                # 4. 初始化轨迹存储和训练步骤
+                self.ppo_trajectory_storage = {} # dict[rid -> list]
+                self.ppo_train_step_counter = 0
+
+                # 5. 获取保存参数
+                self.ppo_save_dir = server_args.ppo_save_dir
+                self.ppo_save_interval = server_args.ppo_save_interval
+                os.makedirs(self.ppo_save_dir, exist_ok=True)
+
+                logger.info("PPO Agent, Optimizer, and Trajectory Storage initialized.")
+                logger.info(f"PPO checkpoints will be saved to: {self.ppo_save_dir}")
+
+            except Exception as e:
+                logger.error(f"Failed to initialize PPO Agent: {e}")
+                logger.error(get_exception_traceback())
+                self.enable_soft_thinking = False
+        # --- === PPO 阶段四 加载 Agent (结束) === ---
+
         # ==========
         # end of soft thinking
         # ==========
@@ -892,7 +983,29 @@ class Scheduler(
             ),
             self.max_req_len - len(req.origin_input_ids) - 1,
         )
+        # <--- PPO 修复：强制开启 Logprob 并初始化相关列表 ---
+        # 只要启用了 Soft Thinking (PPO 模式)，
+        # 我们就必须强制 req.return_logprob = True，
+        # 这样后端才会打包和返回 'output_topk_...' 列表。
+        if self.enable_soft_thinking:
+            req.return_logprob = True
+            req.top_logprobs_num = self.max_topk # 确保 topk 数量一致
 
+            # 由于 req 在创建时(Req.__init__)可能 return_logprob=False,
+            # 导致这些列表被设为 None。我们必须在此处手动初始化它们。
+            if req.output_token_logprobs_val is None:
+                req.output_token_logprobs_val = []
+            if req.output_token_logprobs_idx is None:
+                req.output_token_logprobs_idx = []
+            if req.output_top_logprobs_val is None:
+                req.output_top_logprobs_val = []
+            if req.output_top_logprobs_idx is None:
+                req.output_top_logprobs_idx = []
+            if req.output_token_ids_logprobs_val is None:
+                req.output_token_ids_logprobs_val = []
+            if req.output_token_ids_logprobs_idx is None:
+                req.output_token_ids_logprobs_idx = []
+        # <--- PPO 修复结束 ---
         # Init grammar cache for this request
         add_to_grammar_queue = False
         if (
@@ -1386,17 +1499,22 @@ class Scheduler(
         if self.is_generation:
             if self.spec_algorithm.is_none():
                 model_worker_batch = batch.get_model_worker_batch()
-                logits_output, next_token_ids = self.tp_worker.forward_batch_generation(
+                model_outputs, next_token_ids = self.tp_worker.forward_batch_generation(
                     model_worker_batch
                 )
+                # logits_output, next_token_ids = self.tp_worker.forward_batch_generation(
+                #     model_worker_batch
+                # )
                 bid = model_worker_batch.bid
             else:
+                # --- === PPO 修改点：(假设) spec-worker 也返回元组 === ---
                 (
-                    logits_output,
+                    model_outputs, # (原: logits_output)
                     next_token_ids,
                     bid,
                     num_accepted_tokens,
                 ) = self.draft_worker.forward_batch_speculative_generation(batch)
+                # --- === PPO 修改结束 === ---
                 self.spec_num_total_accepted_tokens += (
                     num_accepted_tokens + batch.batch_size()
                 )
@@ -1417,7 +1535,10 @@ class Scheduler(
                 extend_logprob_start_len_per_req = None
 
             ret = GenerationBatchResult(
-                logits_output=logits_output,
+                # logits_output=logits_output,
+                # --- === PPO 修改点：传递完整的元组 === ---
+                model_outputs=model_outputs, # (原: logits_output=logits_output)
+                # --- === PPO 修改结束 === ---
                 next_token_ids=next_token_ids,
                 extend_input_len_per_req=extend_input_len_per_req,
                 extend_logprob_start_len_per_req=extend_logprob_start_len_per_req,
@@ -1975,6 +2096,162 @@ class Scheduler(
         else:
             del self.sessions[session_id]
 
+    # --- === PPO 阶段四 "Learn" 逻辑 (开始) === ---
+
+    def _compute_gae_and_returns(self,
+                                 rewards: List[float],
+                                 v_values: List[float],
+                                 final_R_T: float,
+                                 gamma: float,
+                                 gae_lambda: float):
+        """
+        计算广义优势估计 (GAE) 和蒙特卡洛回报 (Returns)
+        """
+        advantages = []
+        last_adv = 0.0
+
+        # 我们需要最后一步的 V 值。
+        # 如果答对了 (R_T=1.0)，V(T) = 1.0
+        # 如果答错了 (R_T=0.0)，V(T) = 0.0
+        next_v_value = final_R_T
+
+        # 从后往前计算 GAE
+        for t in reversed(range(len(rewards))):
+            # 最后一个奖励是最终奖励 R_T
+            if t == len(rewards) - 1:
+                rewards[t] = final_R_T
+
+            # 1. 计算 TD 误差 (delta)
+            #    delta_t = r_t + gamma * V(s_{t+1}) - V(s_t)
+            delta = rewards[t] + gamma * next_v_value - v_values[t]
+
+            # 2. 计算 GAE
+            #    A_t = delta_t + gamma * gae_lambda * A_{t+1}
+            last_adv = delta + gamma * gae_lambda * last_adv
+            advantages.insert(0, last_adv) # 插到开头
+
+            next_v_value = v_values[t]
+
+        # 3. 计算 Returns (用于训练 Critic)
+        #    Returns_t = A_t + V(s_t)
+        returns = [adv + v for adv, v in zip(advantages, v_values)]
+
+        return advantages, returns
+
+    def _train_ppo_agent(self, rid: str, final_reward: float):
+        """
+        PPO 训练的核心逻辑。
+        """
+
+        # 1. 获取这个 rid 的完整轨迹
+        if rid not in self.ppo_trajectory_storage or len(self.ppo_trajectory_storage[rid]) == 0:
+            logger.warning(f"PPO: Trajectory for {rid} not found. Skipping training.")
+            return
+
+        trajectory = self.ppo_trajectory_storage[rid]
+
+        try:
+            # 2. 提取数据
+            H_t_list = [exp["H_t"] for exp in trajectory]
+            L_t_list = [exp["L_t"] for exp in trajectory]
+            actions = [exp["action"] for exp in trajectory]
+            old_log_probs = [exp["log_prob"] for exp in trajectory]
+            v_values = [exp["v_value"] for exp in trajectory]
+            rewards = [exp["reward"] for exp in trajectory] # (大部分是 0)
+
+            # --- PPO 超参数 (应放入 server_args) ---
+            GAMMA = 0.99
+            GAE_LAMBDA = 0.95
+            PPO_UPDATE_EPOCHS = 4
+            VF_COEF = 0.5  # Critic 损失的权重
+            ENT_COEF = 0.01 # 熵奖励的权重
+            CLIP_EPS = 0.2  # PPO 裁剪系数
+            # --- ---
+
+            # 3. 计算 Advantage 和 Returns
+            advantages, returns = self._compute_gae_and_returns(
+                rewards, v_values, final_reward, GAMMA, GAE_LAMBDA
+            )
+
+            # 4. 转换为 Tensors
+            b_H_t = torch.stack(H_t_list).to(self.device)
+            b_L_t = torch.stack(L_t_list).to(self.device)
+            b_actions = torch.stack(actions).to(self.device)
+            b_old_log_probs = torch.stack(old_log_probs).to(self.device)
+            b_advantages = torch.tensor(advantages, dtype=self.ppo_dtype).to(self.device)
+            b_returns = torch.tensor(returns, dtype=self.ppo_dtype).to(self.device)
+
+            # 5. PPO 优化循环
+            with torch.enable_grad():
+                self.ppo_agent.train() # 切换到训练模式
+                for _ in range(PPO_UPDATE_EPOCHS):
+                    # 重新评估旧状态 (获取新 V值 和 新 log_prob)
+                    _, new_log_probs, entropy, new_v_values = self.ppo_agent.get_action_and_value(
+                        b_H_t, b_L_t, b_actions
+                    )
+
+                    # a. 计算 Critic Loss (V 值损失)
+                    critic_loss = F.mse_loss(new_v_values, b_returns)
+
+                    # b. 计算 Actor Loss (策略损失)
+                    #    比率: ratio = exp(new_log_prob - old_log_prob)
+                    log_ratio = new_log_probs - b_old_log_probs
+                    ratio = torch.exp(log_ratio)
+
+                    #    归一化 Advantage (可选但推荐)
+                    # <--- PPO 修复：防止
+                    # b_advantages.std() 在 trajectory 长度为 1 时返回 nan ---
+                    if b_advantages.numel() > 1:
+                        norm_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
+                    else:
+                        # If trajectory length is 1, std is nan.
+                        # (adv - adv.mean()) 结果为 0, 所以 norm_advantages 应该是 0.
+                        norm_advantages = b_advantages - b_advantages.mean()
+                        # <--- PPO 修复结束 ---
+
+                    #    PPO-Clip 目标 1
+                    surr1 = ratio * norm_advantages
+                    #    PPO-Clip 目标 2
+                    surr2 = torch.clamp(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS) * norm_advantages
+
+                    #    最终 Actor Loss
+                    actor_loss = -torch.min(surr1, surr2).mean()
+
+                    #    熵损失 (鼓励探索)
+                    entropy_loss = -entropy.mean()
+
+                    # c. 总损失
+                    loss = actor_loss + (VF_COEF * critic_loss) + (ENT_COEF * entropy_loss)
+
+                    # d. 梯度下降
+                    self.ppo_optimizer.zero_grad()
+                    loss.backward()
+                    self.ppo_optimizer.step()
+
+                self.ppo_agent.eval() # 切换回评估模式
+                # --- PPO 修复结束 ---
+            logger.info(f"PPO: Finished training for rid: {rid}. Final Reward: {final_reward}. Actor Loss: {actor_loss.item():.4f}, Critic Loss: {critic_loss.item():.4f}")
+
+        except Exception as e:
+            logger.error(f"PPO: Failed during training for rid: {rid}. Error: {e}")
+            logger.error(get_exception_traceback())
+
+        # 6. 清理轨迹 (无论成功与否)
+        del self.ppo_trajectory_storage[rid]
+
+        # --- === PPO 阶段四 自动保存 (开始) === ---
+        self.ppo_train_step_counter += 1
+        if self.ppo_train_step_counter % self.ppo_save_interval == 0:
+            try:
+                save_path = os.path.join(
+                    self.ppo_save_dir,
+                    f"ppo_agent_step_{self.ppo_train_step_counter}.pth"
+                )
+                torch.save(self.ppo_agent.state_dict(), save_path)
+                logger.info(f"PPO Agent checkpoint saved to: {save_path}")
+            except Exception as e:
+                logger.error(f"PPO: Failed to save checkpoint. Error: {e}")
+        # --- === PPO 阶段四 自动保存 (结束) === ---
 
 def is_health_check_generate_req(recv_req):
     return getattr(recv_req, "rid", "").startswith("HEALTH_CHECK")

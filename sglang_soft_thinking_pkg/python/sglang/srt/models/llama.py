@@ -307,7 +307,7 @@ class LlamaModel(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
-        
+
         # ==========
         # begin of soft thinking
         # ==========
@@ -319,7 +319,7 @@ class LlamaModel(nn.Module):
             else:
                 hidden_states = self.embed_tokens.weighted_forward(
                     forward_batch.topk_probs, forward_batch.topk_indices
-                )  
+                )
         elif input_embeds is None:
             hidden_states = self.embed_tokens(input_ids)
         else:
@@ -444,7 +444,7 @@ class LlamaForCausalLM(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor = None,
         get_embedding: bool = False,
-    ) -> LogitsProcessorOutput:
+    ) -> Any: # <-- PPO 修改点 1: 改变返回类型提示
         aux_hidden_states = None
         if self.capture_aux_hidden_states:
             hidden_states, aux_hidden_states = self.model(
@@ -456,10 +456,27 @@ class LlamaForCausalLM(nn.Module):
             )
 
         if not get_embedding:
-            return self.logits_processor(
+            # --- === PPO (H_t) 修复 (开始) === ---
+
+            # 1. LogitsProcessor 会计算 logits
+            logits_output = self.logits_processor(
                 input_ids, hidden_states, self.lm_head, forward_batch, aux_hidden_states
             )
+
+            # 2. 我们需要手动提取 H_t (最后 token 的隐藏状态)
+            if forward_batch.forward_mode.is_extend():
+                # Prefill 模式: 索引出最后一个 token
+                # (修复: 使用 .last_token_indices, 而不是 .input_metadata.last_token_indices)
+                last_token_indices = forward_batch.last_token_indices
+                H_t = hidden_states[last_token_indices] # [BatchSize, H]
+            else:
+                # Decode 模式: hidden_states 已经是 [BatchSize, H]
+                H_t = hidden_states
+
+            return logits_output, H_t # <--- 修复: 返回 [BatchSize, H]
+            # --- === PPO (H_t) 修复 (结束) === ---
         else:
+            # 保持 embedding 路径不变
             return self.pooler(hidden_states, forward_batch)
 
     def get_input_embeddings(self) -> nn.Embedding:

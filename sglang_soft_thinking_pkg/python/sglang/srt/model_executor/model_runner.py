@@ -20,7 +20,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union # <-- PPO 修改点：添加 Any
 
 import torch
 import torch.distributed as dist
@@ -125,6 +125,16 @@ class ModelRunner:
         self.tp_size = tp_size
         self.dist_port = nccl_port
         self.server_args = server_args
+        # ==========
+        # begin of soft thinking
+        # ==========
+        self.enable_soft_thinking = server_args.enable_soft_thinking
+        self.add_noise_dirichlet = server_args.add_noise_dirichlet
+        self.add_noise_gumbel_softmax = server_args.add_noise_gumbel_softmax
+        # ==========
+        # end of soft thinking
+        # ==========
+
         self.is_draft_worker = is_draft_worker
         self.is_generation = model_config.is_generation
         self.is_multimodal = model_config.is_multimodal
@@ -183,15 +193,6 @@ class ModelRunner:
         # If it is a draft model, tp_group can be different
         self.initialize(min_per_gpu_memory)
 
-        # ==========
-        # begin of soft thinking
-        # ==========
-        self.enable_soft_thinking = server_args.enable_soft_thinking
-        self.add_noise_dirichlet = server_args.add_noise_dirichlet
-        self.add_noise_gumbel_softmax = server_args.add_noise_gumbel_softmax
-        # ==========
-        # end of soft thinking
-        # ==========
 
     def initialize(self, min_per_gpu_memory: float):
         server_args = self.server_args
@@ -975,7 +976,14 @@ class ModelRunner:
 
         if self.server_args.disable_cuda_graph:
             return
-
+        # --- === PPO 阶段四 修复 (开始) === ---
+        # 我们的 PPO 模式 (soft_thinking) 返回 (logits, H_t) 元组,
+        # 这与 CUDA Graph 期望的 LogitsProcessorOutput 对象不兼容。
+        # 我们必须在 PPO 模式下完全禁用 CUDA Graph 的 *捕获*。
+        if self.enable_soft_thinking:
+            logger.info("PPO 'enable_soft_thinking' is True. Disabling CUDA Graph capture.")
+            return
+        # --- === PPO 阶段四 修复 (结束) === ---
         tic = time.time()
         before_mem = get_available_gpu_memory(self.device, self.gpu_id)
         logger.info(
@@ -997,22 +1005,27 @@ class ModelRunner:
 
     def forward_decode(self, forward_batch: ForwardBatch):
         self.attn_backend.init_forward_metadata(forward_batch)
-        # ==========
-        # begin of soft thinking
-        # ==========
+
+        # --- === PPO 修复 (开始): 提取 H_t (Decode 路径) === ---
         if self.enable_soft_thinking:
-            return self.model.forward(
-                None, 
-                forward_batch.positions, 
+            # 1. model.forward 返回 (logits, H_t) 元组
+            logits_output, hidden_states = self.model.forward(
+                None,
+                forward_batch.positions,
                 forward_batch,
             )
+            # 2. Decode 模式下, H_t 已经是 [BatchSize, H]
+            H_t = hidden_states
+            return logits_output, H_t
         else:
-            return self.model.forward(
+            # 1. model.forward 返回 (logits, H_t) 元组
+            logits_output, hidden_states = self.model.forward(
                 forward_batch.input_ids, forward_batch.positions, forward_batch
             )
-        # ==========
-        # end of soft thinking
-        # ==========
+            # 2. Decode 模式下, H_t 已经是 [BatchSize, H]
+            H_t = hidden_states
+            return logits_output, H_t
+        # --- === PPO 修复 (结束) === ---
 
     def forward_extend(
         self, forward_batch: ForwardBatch, skip_attn_backend_init: bool = False
@@ -1020,45 +1033,89 @@ class ModelRunner:
         if not skip_attn_backend_init:
             self.attn_backend.init_forward_metadata(forward_batch)
 
+        # --- === PPO 修复 (开始): 提取 H_t (Extend 路径) === ---
         if self.is_generation:
             if forward_batch.input_embeds is None:
-                return self.model.forward(
+                # 1. model.forward 返回 (logits, H_t_full)
+                logits_output, hidden_states = self.model.forward(
                     forward_batch.input_ids, forward_batch.positions, forward_batch
                 )
             else:
-                return self.model.forward(
+                # 1. model.forward 返回 (logits, H_t_full)
+                logits_output, hidden_states = self.model.forward(
                     forward_batch.input_ids,
                     forward_batch.positions,
                     forward_batch,
                     input_embeds=forward_batch.input_embeds.bfloat16(),
                 )
-        else:
-            # Only embedding models have get_embedding parameter
-            return self.model.forward(
+
+            # 2. Prefill 模式: 索引出最后一个 token
+            #    (这次 ForwardBatch *一定* 有 input_metadata)
+            last_token_indices = forward_batch.extend_start_loc + forward_batch.extend_seq_lens - 1
+            H_t = hidden_states[last_token_indices] # [BatchSize, H]
+
+            return logits_output, H_t # 返回 (logits, H_t_last_token)
+
+        else: # (Embedding 路径)
+            # 1. model.forward 返回 (logits_or_embedding, H_t_full)
+            embedding_output, hidden_states = self.model.forward(
                 forward_batch.input_ids,
                 forward_batch.positions,
                 forward_batch,
                 get_embedding=True,
             )
+            # 2. Embedding 模式: 我们不需要 H_t
+            return embedding_output
+        # --- === PPO 修复 (结束) === ---
 
     def forward_idle(self, forward_batch: ForwardBatch):
         return self.model.forward(
             forward_batch.input_ids, forward_batch.positions, forward_batch
         )
 
+    # def forward(
+    #     self, forward_batch: ForwardBatch, skip_attn_backend_init: bool = False
+    # ) -> Tuple[LogitsProcessorOutput, torch.Tensor]: # <<< === PPO 修改点 ===
+    #     if (
+    #         forward_batch.forward_mode.is_cuda_graph()
+    #         and self.cuda_graph_runner
+    #         and self.cuda_graph_runner.can_run(forward_batch)
+    #     ):
+    #         return self.cuda_graph_runner.replay(
+    #             forward_batch, skip_attn_backend_init=skip_attn_backend_init
+    #         )
+    #
+    #     if forward_batch.forward_mode.is_decode():
+    #         return self.forward_decode(forward_batch)
+    #     elif forward_batch.forward_mode.is_extend():
+    #         return self.forward_extend(
+    #             forward_batch, skip_attn_backend_init=skip_attn_backend_init
+    #         )
+    #     elif forward_batch.forward_mode.is_idle():
+    #         return self.forward_idle(forward_batch)
+    #     else:
+    #         raise ValueError(f"Invalid forward mode: {forward_batch.forward_mode}")
     def forward(
         self, forward_batch: ForwardBatch, skip_attn_backend_init: bool = False
-    ) -> LogitsProcessorOutput:
+    ) -> Any: # <-- PPO 修改点 1: 将返回类型改为 Any
         if (
             forward_batch.forward_mode.is_cuda_graph()
             and self.cuda_graph_runner
             and self.cuda_graph_runner.can_run(forward_batch)
+            # --- === PPO 修改点 2: 禁用 CUDA Graph === ---
+            #
+            # 我们的 PPO 模式 (soft_thinking) 依赖于
+            # model.forward 返回 (logits, H_t) 元组。
+            # CUDA Graph 捕获的是旧的、只返回 logits 的图。
+            # 因此，在PPO模式下，我们必须禁用 CUDA Graph。
+            and not self.enable_soft_thinking
+            # --- === PPO 修改结束 === ---
         ):
             return self.cuda_graph_runner.replay(
                 forward_batch, skip_attn_backend_init=skip_attn_backend_init
             )
-
-        if forward_batch.forward_mode.is_decode():
+        if forward_batch.forward_mode.is_decode() or forward_batch.forward_mode.is_cuda_graph():
+            # --- === PPO 修复 (结束) === ---
             return self.forward_decode(forward_batch)
         elif forward_batch.forward_mode.is_extend():
             return self.forward_extend(
@@ -1068,7 +1125,6 @@ class ModelRunner:
             return self.forward_idle(forward_batch)
         else:
             raise ValueError(f"Invalid forward mode: {forward_batch.forward_mode}")
-
     def _preprocess_logits(
         self, logits_output: LogitsProcessorOutput, sampling_info: SamplingBatchInfo
     ):
@@ -1116,11 +1172,11 @@ class ModelRunner:
             forward_batch.sampling_info,
             forward_batch.return_logprob,
             forward_batch.top_logprobs_nums,
-            forward_batch.token_ids_logprobs,  
+            forward_batch.token_ids_logprobs,
             enable_soft_thinking=self.enable_soft_thinking,
             add_noise_gumbel_softmax=self.add_noise_gumbel_softmax,
             add_noise_dirichlet=self.add_noise_dirichlet,
-        )   
+        )
 
         # ==========
         # end of soft thinking

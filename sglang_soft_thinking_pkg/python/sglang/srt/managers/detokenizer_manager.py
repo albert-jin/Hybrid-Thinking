@@ -234,6 +234,9 @@ class DetokenizerManager:
             # ==========
             output_topk_probs_list=recv_obj.output_topk_probs_list,
             output_topk_indices_list=recv_obj.output_topk_indices_list,
+            # --- PPO H_t 传递修复 ---
+            output_last_hidden_state_list=recv_obj.output_last_hidden_state_list,
+            # --- PPO H_t 传递修复结束 ---
             # ==========
             # end of soft thinking
             # ==========

@@ -582,20 +582,25 @@ class Req:
             self.topk_prob = torch.empty(
                 max_topk,  # 注意：直接传尺寸数字，不要用元组
                 dtype=torch.bfloat16,
-                device=torch.device('cuda:0')  # 明确指定设备索引
+                device=global_server_args_dict["device"]  # 明确指定设备索引
             ).fill_(float('nan'))
 
             self.topk_idx = torch.full(
                 (max_topk,),  # full()可以接受元组
                 -1,
                 dtype=torch.int64,
-                device=torch.device('cuda:0')
+                device=global_server_args_dict["device"]
             )
             # NOTE: 输入的部分暂时不进行保留。 shape: [output_len, K]
             self.output_topk_prob_list = []
             self.output_topk_idx_list = []
             self.output_topk_prob_list_tmp = []
             self.output_topk_idx_list_tmp = []
+            # --- PPO H_t 存储 ---
+            self.output_last_hidden_state = None # 存储当前 H_t
+            self.output_last_hidden_state_list = [] # 最终列表
+            self.output_last_hidden_state_list_tmp = [] # 临时列表
+            # --- PPO H_t 存储结束 ---
             # track consecutive low entropy steps for early stopping
             self.low_entropy_steps = 0
         # ==========
@@ -723,60 +728,196 @@ class Req:
     # ==========
     # begin of soft thinking
     # ==========
-    def update_topk_info(self, logits_output, index):
-        # 更新 topk 信息
+    # update_top_k_info 训练版-
+    def update_top_k_info(self, logits_output, index, last_hidden_state):
+        """
+        [PPO 魔改]
+        此方法现在是一个"傀儡"执行器。
+        它不
+        做任何决策，只服从 sampling_params 中的 'soft_hard_action' 指令。
+        """
+
+        # 1. 像原来一样，先获取 topk 信息
         self.topk_prob = logits_output.topk_probs[index]
         self.topk_idx = logits_output.topk_indices[index]
         self.entropy = logits_output.entropy[index]
-        # last_token_id = self.output_ids[-1]
+        # --- PPO H_t 存储 ---
+        self.output_last_hidden_state = last_hidden_state # 存储 H_t
+        # --- PPO H_t 存储结束 ---
+        # 2. 从采样参数中获取"动作指令"
+        action_command = self.sampling_params.soft_hard_action
 
-        if self.sampling_params.soft_thinking_mode:
-            if self.sampling_params.think_end_str_id is None:
-                self.sampling_params.think_end_str_id = self.tokenizer.encode(self.sampling_params.think_end_str,add_special_tokens=False)[-1]
-            # early stopping: replace with think_end_str_id if entropy remains low
-            if self.sampling_params.early_stopping_entropy_threshold > 0:
-                if self.entropy < self.sampling_params.early_stopping_entropy_threshold:
-                    self.low_entropy_steps += 1
-                else:
-                    self.low_entropy_steps = 0
-                if self.low_entropy_steps >= self.sampling_params.early_stopping_length_threshold:
-                    print(f"Early stopping triggered", flush=True)
-                    # trigger early stop, emit think_end_str token
-                    self.output_ids[-1] = self.sampling_params.think_end_str_id
-                    self.topk_prob[1:].fill_(0)
-                    self.topk_idx[1:].fill_(0)
-                    self.topk_prob[0] = 1.0
-                    self.topk_idx[0] = self.sampling_params.think_end_str_id
-                    self.low_entropy_steps = 0
-
-            if self.sampling_params.think_end_str_id == self.output_ids[-1]:
-                # 退出 soft thinking 模式并将 topk 设置为 one-hot
-                self.sampling_params.soft_thinking_mode = False
-                # 一键清零再设置 head
-                self.topk_prob[1:].fill_(0)
-                self.topk_idx[1:].fill_(0)
-                self.topk_prob[0] = 1.0
-                self.topk_idx[0] = self.sampling_params.think_end_str_id
-                self.low_entropy_steps = 0
-        else:
-            if self.sampling_params.early_stopping_entropy_threshold > 0:
-                if self.entropy < self.sampling_params.early_stopping_entropy_threshold:
-                    self.low_entropy_steps += 1
-                else:
-                    self.low_entropy_steps = 0
-                if self.low_entropy_steps >= self.sampling_params.early_stopping_length_threshold:
-                    print(f"Early stopping triggered.", flush=True)
-                    self.to_abort = True
-
-            # 普通模式下只需 in-place 清零 tail，head 保持 logits 输出
+        # 3. 执行指令
+        if action_command == 1:
+            # 指令 1: "Hard" 模式
+            # 强制将 top-k 概率转换为 "one-hot"
+            # (即只保留采样到的第一个 token，概率为 1.0)
             self.topk_prob[1:].fill_(0)
             self.topk_idx[1:].fill_(0)
             self.topk_prob[0] = 1.0
 
-        # 仅在未完成时记录 topk 信息
+        elif action_command == 0:
+            # 指令 0: "Soft" 模式
+            # 不做任何事，保持 self.topk_prob (包含 K 个概率) 不变
+            pass
+
+        else:
+            # 默认/Fallback 行为 (如果指令未提供)
+            # 我们默认为 "Hard" 模式以确保安全
+            self.topk_prob[1:].fill_(0)
+            self.topk_idx[1:].fill_(0)
+            self.topk_prob[0] = 1.0
+
+        # 4. 像原来一样，保存 topk 列表 (用于最终输出)
         if not self.finished():
             self.output_topk_prob_list_tmp.append(self.topk_prob)
             self.output_topk_idx_list_tmp.append(self.topk_idx)
+            # --- PPO H_t 存储 ---
+            self.output_last_hidden_state_list_tmp.append(self.output_last_hidden_state)
+            # --- PPO H_t 存储结束 ---
+    # update_top_k_info  阈值版
+    # def update_topk_info(self, logits_output, index):
+    #     # 1. 获取 *原始的*、*未修改的* top-k 信息
+    #     #    我们用 original_... 来做决策
+    #     original_topk_prob = logits_output.topk_probs[index]
+    #     original_topk_idx = logits_output.topk_indices[index]
+    #
+    #     # 2. 复制一份，准备"可能"的修改
+    #     self.topk_prob = original_topk_prob.clone()
+    #     self.topk_idx = original_topk_idx.clone()
+    #     self.entropy = logits_output.entropy[index]
+    #
+    #     # -----------------------------------------------------------------
+    #     # 3. <<< 自适应逻辑 - Part A: 处理 *当前* 步骤 >>>
+    #
+    #     # 'self.sampling_params.soft_thinking_mode' 保存的是 *上一步* 做的决定
+    #     current_mode_is_soft = self.sampling_params.soft_thinking_mode
+    #
+    #     if not current_mode_is_soft:
+    #         # 当前是 "Hard" 步，强制将 *输出* 设为 one-hot
+    #         self.topk_prob[1:].fill_(0)
+    #         self.topk_idx[1:].fill_(0)
+    #         self.topk_prob[0] = 1.0
+    #
+    #     # 4. 记录 *当前* 步骤的 (可能被修改过的) topk 信息
+    #     if not self.finished():
+    #         self.output_topk_prob_list_tmp.append(self.topk_prob)
+    #         self.output_topk_idx_list_tmp.append(self.topk_idx)
+    #
+    #     # -----------------------------------------------------------------
+    #     # 5. <<< 自适应逻辑 - Part B: 决策 *下一个* 步骤 >>>
+    #
+    #     # 我们基于 *原始的*、*未修改的* Top-1 概率来做决策
+    #     # 这反映了模型最"纯粹"的自信程度
+    #     top_1_confidence = original_topk_prob[0]
+    #
+    #     # 设置一个自信阈值 (例如 0.8，这需要实验调优)
+    #     CONFIDENCE_THRESHOLD = 0.8
+    #
+    #     if top_1_confidence > CONFIDENCE_THRESHOLD:
+    #         # 1. 高自信 -> "断言" -> 下一步用 Hard 模式
+    #         self.sampling_params.soft_thinking_mode = False
+    #     else:
+    #         # 2. 低自信 -> "探索" -> 下一步用 Soft 模式
+    #         self.sampling_params.soft_thinking_mode = True
+    #     # update_top_k_info  固定 1-0-1-0-1-0
+    # def update_topk_info(self, logits_output, index):
+    #     # 1. 更新 topk 信息（与原来相同）
+    #     self.topk_prob = logits_output.topk_probs[index]
+    #     self.topk_idx = logits_output.topk_indices[index]
+    #     self.entropy = logits_output.entropy[index]
+    #
+    #     # -----------------------------------------------------------------
+    #     # 2. <<< 新的循环切换逻辑 >>>
+    #
+    #     # 获取 *当前* 步骤的模式
+    #     current_mode_is_soft = self.sampling_params.soft_thinking_mode
+    #
+    #     if not current_mode_is_soft:
+    #         # 当前是 "Hard" 步:
+    #         # 强制将 top-k 概率转换为 "one-hot"
+    #         # （即只保留采样到的第一个 token，概率为 1.0）
+    #         self.topk_prob[1:].fill_(0)
+    #         self.topk_idx[1:].fill_(0)
+    #         self.topk_prob[0] = 1.0
+    #     # else:
+    #     # 当前是 "Soft" 步:
+    #     # 不做任何事，保持 self.topk_prob (包含 K 个概率) 不变
+    #
+    #     # 3. 设置 *下一个* 步骤的模式
+    #
+    #     # self.output_ids 刚刚被添加了当前 token
+    #     # len(self.output_ids) 是 *下一步* 的索引号
+    #     next_step_index = len(self.output_ids)
+    #
+    #     # 循环模式: [Soft (0), Hard (1), Soft (2), Hard (3), ...]
+    #     if next_step_index % 2 == 0:
+    #         # 下一步是偶数步 (0, 2, 4...) -> 设为 Soft
+    #         self.sampling_params.soft_thinking_mode = True
+    #     else:
+    #         # 下一步是奇数步 (1, 3, 5...) -> 设为 Hard
+    #         self.sampling_params.soft_thinking_mode = False
+    #
+    #     # -----------------------------------------------------------------
+    #
+    #     # 4. 仅在未完成时记录 topk 信息（与原来相同）
+    #     if not self.finished():
+    #         self.output_topk_prob_list_tmp.append(self.topk_prob)
+    #         self.output_topk_idx_list_tmp.append(self.topk_idx)
+    # def update_topk_info(self, logits_output, index):
+    #     # 更新 topk 信息
+    #     self.topk_prob = logits_output.topk_probs[index]
+    #     self.topk_idx = logits_output.topk_indices[index]
+    #     self.entropy = logits_output.entropy[index]
+    #     # last_token_id = self.output_ids[-1]
+    #
+    #     if self.sampling_params.soft_thinking_mode:
+    #         if self.sampling_params.think_end_str_id is None:
+    #             self.sampling_params.think_end_str_id = self.tokenizer.encode(self.sampling_params.think_end_str,add_special_tokens=False)[-1]
+    #         # early stopping: replace with think_end_str_id if entropy remains low
+    #         if self.sampling_params.early_stopping_entropy_threshold > 0:
+    #             if self.entropy < self.sampling_params.early_stopping_entropy_threshold:
+    #                 self.low_entropy_steps += 1
+    #             else:
+    #                 self.low_entropy_steps = 0
+    #             if self.low_entropy_steps >= self.sampling_params.early_stopping_length_threshold:
+    #                 print(f"Early stopping triggered", flush=True)
+    #                 # trigger early stop, emit think_end_str token
+    #                 self.output_ids[-1] = self.sampling_params.think_end_str_id
+    #                 self.topk_prob[1:].fill_(0)
+    #                 self.topk_idx[1:].fill_(0)
+    #                 self.topk_prob[0] = 1.0
+    #                 self.topk_idx[0] = self.sampling_params.think_end_str_id
+    #                 self.low_entropy_steps = 0
+    #
+    #         if self.sampling_params.think_end_str_id == self.output_ids[-1]:
+    #             # 退出 soft thinking 模式并将 topk 设置为 one-hot
+    #             self.sampling_params.soft_thinking_mode = False
+    #             # 一键清零再设置 head
+    #             self.topk_prob[1:].fill_(0)
+    #             self.topk_idx[1:].fill_(0)
+    #             self.topk_prob[0] = 1.0
+    #             self.topk_idx[0] = self.sampling_params.think_end_str_id
+    #             self.low_entropy_steps = 0
+    #     else:
+    #         if self.sampling_params.early_stopping_entropy_threshold > 0:
+    #             if self.entropy < self.sampling_params.early_stopping_entropy_threshold:
+    #                 self.low_entropy_steps += 1
+    #             else:
+    #                 self.low_entropy_steps = 0
+    #             if self.low_entropy_steps >= self.sampling_params.early_stopping_length_threshold:
+    #                 print(f"Early stopping triggered.", flush=True)
+    #                 self.to_abort = True
+    #
+    #         # 普通模式下只需 in-place 清零 tail，head 保持 logits 输出
+    #         self.topk_prob[1:].fill_(0)
+    #         self.topk_idx[1:].fill_(0)
+    #         self.topk_prob[0] = 1.0
+    #
+    #     # 仅在未完成时记录 topk 信息
+    #     if not self.finished():
+    #         self.output_topk_prob_list_tmp.append(self.topk_prob)
+    #         self.output_topk_idx_list_tmp.append(self.topk_idx)
 
     def get_output_topk_prob_list(self):
         if self.output_topk_prob_list_tmp:
@@ -811,8 +952,31 @@ class Req:
             f"Req(rid={self.rid}, "
             f"input_ids={self.origin_input_ids}, output_ids={self.output_ids})"
         )
+    def get_full_output_text(self) -> str:
+        """
+        获取此请求的最终完整输出文本，用于 matheval 评判。
+        """
+        if self.tokenizer is None:
+            logger.error("PPO: Req.tokenizer is None. Cannot decode output text.")
+            return ""
 
-
+        # 解码所有生成的 token IDs
+        # skip_special_tokens=False 是为了让 matheval 能看到 <</think>>
+        # (尽管 matheval 的 rule_judge 可能不在乎)
+        output_text = self.tokenizer.decode(
+            self.output_ids,
+            skip_special_tokens=False,
+            spaces_between_special_tokens=self.sampling_params.spaces_between_special_tokens,
+        )
+        return output_text
+    # --- === PPO 阶段四 插入 (结束) === ---
+        # --- PPO H_t 存储: 添加这个新方法 ---
+    def get_output_last_hidden_state_list(self):
+        if self.output_last_hidden_state_list_tmp:
+            self.output_last_hidden_state_list.extend(torch.stack(self.output_last_hidden_state_list_tmp, dim=0).cpu().tolist())
+            self.output_last_hidden_state_list_tmp = []
+        return self.output_last_hidden_state_list
+    # --- PPO H_t 存储结束 ---
 bid = 0
 
 
@@ -927,7 +1091,12 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         enable_custom_logit_processor: bool,
     ):
         return_logprob = any(req.return_logprob for req in reqs)
-
+        # <--- PPO 修复：强制开启 Logprob ---
+        # 如果启用了 Soft Thinking，我们必须确保批次(Batch)
+        # 也被标记为 return_logprob=True。
+        if model_config.enable_soft_thinking:
+            return_logprob = True
+            # <--- PPO 修复结束 ---
         return cls(
             reqs=reqs,
             req_to_token_pool=req_to_token_pool,

@@ -205,6 +205,13 @@ class ServerArgs:
     max_topk: int = 30
     add_noise_dirichlet: bool = False
     add_noise_gumbel_softmax: bool = False
+    # --- PPO 阶段四 插入 (开始) ---
+    # <--- 新增：PPO Agent Checkpoint 路径 ---
+    ppo_agent_checkpoint_path: Optional[str] = None
+    # <--- 新增结束 ---
+    ppo_save_dir: str = "ppo_checkpoints"
+    ppo_save_interval: int = 50 # 每 N 步保存一次
+    # --- PPO 阶段四 插入 (结束) ---
     # ==========
     # end of soft thinking
     # ==========
@@ -1182,7 +1189,7 @@ class ServerArgs:
             action="store_true",
             help="Enable soft thinking mode"
         )
-        
+
         parser.add_argument(
             "--think-end-str",
             type=str,

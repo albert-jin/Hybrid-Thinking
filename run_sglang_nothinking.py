@@ -117,7 +117,7 @@ def main():
         with open("./datasets/gpqa_diamond.json") as f:
             samples = json.load(f)
     elif dataset == "gsm8k":
-        with open("./datasets/gsm8k.json") as f:
+        with open("./datasets/train_gsm8k.json") as f:
             samples = json.load(f)
     elif dataset == "amc23":
         with open("./datasets/amc23.json") as f:

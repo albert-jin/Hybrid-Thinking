@@ -28,7 +28,7 @@ import uvloop
 #     asyncio.get_running_loop()
 # except RuntimeError:
 #     asyncio.set_event_loop(asyncio.new_event_loop())
-MATH_DATASETS = ["math500","aime2024","aime2025","gpqa_diamond","gsm8k","amc23"]
+MATH_DATASETS = ["math500","aime2024","aime2025","gpqa_diamond","gsm8k","amc23","train_gsm8k"]
 CODE_DATASETS = ["humaneval","mbpp","livecodebench"]
 
 def main():
@@ -132,6 +132,9 @@ def main():
     elif dataset == "gsm8k":
         with open("./datasets/gsm8k.json") as f:
             samples = json.load(f)
+    elif dataset == "train_gsm8k":
+        with open("./datasets/train_gsm8k.json") as f:
+            samples = json.load(f)
     elif dataset == "amc23":
         with open("./datasets/amc23.json") as f:
             samples = json.load(f)
@@ -203,20 +206,41 @@ Test Cases:
                         "early_stopping_length_threshold": args.early_stopping_length_threshold
                     }
 
+    # os.makedirs(f"{args.output_dir}/results/{dataset}", exist_ok=True)
+    # noise_suffix = (
+    #     (f"_gumbel_{args.gumbel_softmax_temperature}" if args.add_noise_gumbel_softmax else "")
+    #     + (f"_dirichlet_{args.dirichlet_alpha}" if args.add_noise_dirichlet else "")
+    # )
+    # base_filename = (
+    #     f"{model_name.split('/')[-1]}_{dataset}_{args.enable_soft_thinking}_{args.num_samples}_"
+    #     f"{temperature}_{top_p}_{top_k}_{min_p}_{args.repetition_penalty}_{args.dirichlet_alpha}_"
+    #     f"{args.max_topk}_{max_generated_tokens}_{args.early_stopping_entropy_threshold}_"
+    #     f"{args.early_stopping_length_threshold}{noise_suffix}"
+    # )
+    # results_file = f"{args.output_dir}/results/{dataset}/{base_filename}.json"
+    # results_statistics_file = f"{args.output_dir}/results/{dataset}/{base_filename}_statistics.json"
+    # 1. 生成一个格式化的时间戳 (例如: 20251102_200856)
+    run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+
     os.makedirs(f"{args.output_dir}/results/{dataset}", exist_ok=True)
     noise_suffix = (
-        (f"_gumbel_{args.gumbel_softmax_temperature}" if args.add_noise_gumbel_softmax else "")
-        + (f"_dirichlet_{args.dirichlet_alpha}" if args.add_noise_dirichlet else "")
+            (f"_gumbel_{args.gumbel_softmax_temperature}" if args.add_noise_gumbel_softmax else "")
+            + (f"_dirichlet_{args.dirichlet_alpha}" if args.add_noise_dirichlet else "")
     )
-    base_filename = (
+
+    # 2. 将所有参数组合成基本文件名
+    base_filename_params = (
         f"{model_name.split('/')[-1]}_{dataset}_{args.enable_soft_thinking}_{args.num_samples}_"
         f"{temperature}_{top_p}_{top_k}_{min_p}_{args.repetition_penalty}_{args.dirichlet_alpha}_"
         f"{args.max_topk}_{max_generated_tokens}_{args.early_stopping_entropy_threshold}_"
         f"{args.early_stopping_length_threshold}{noise_suffix}"
     )
+
+    # 3. 将时间戳附加到基本文件名 (格式: [参数]_[时间戳])
+    base_filename = f"{base_filename_params}_{run_timestamp}"
+
     results_file = f"{args.output_dir}/results/{dataset}/{base_filename}.json"
     results_statistics_file = f"{args.output_dir}/results/{dataset}/{base_filename}_statistics.json"
-
     results = []
 
     print("begin")

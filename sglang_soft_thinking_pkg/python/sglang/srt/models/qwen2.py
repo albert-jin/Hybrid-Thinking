@@ -264,7 +264,7 @@ class Qwen2Model(nn.Module):
             prefix=add_prefix("layers", prefix),
         )
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        
+
         # ==========
         # begin of soft thinking
         # ==========
@@ -300,7 +300,7 @@ class Qwen2Model(nn.Module):
             else:
                 hidden_states = self.embed_tokens.weighted_forward(
                     forward_batch.topk_probs, forward_batch.topk_indices
-                )  
+                )
         elif input_embeds is None:
             hidden_states = self.embed_tokens(input_ids)
         else:
@@ -402,13 +402,18 @@ class Qwen2ForCausalLM(nn.Module):
         forward_batch: ForwardBatch,
         input_embeds: torch.Tensor = None,
         get_embedding: bool = False,
-    ) -> torch.Tensor:
+    ) -> Any: # <-- PPO 修改点 1: 改变返回类型提示
         hidden_states = self.model(input_ids, positions, forward_batch, input_embeds)
         if not get_embedding:
-            return self.logits_processor(
+            # --- === PPO (H_t) 修改点 2: 捕获 logits 并返回元组 === ---
+            logits_output = self.logits_processor(
                 input_ids, hidden_states, self.lm_head, forward_batch
             )
+            # H_t (last_hidden_state) 就是这里的 hidden_states
+            return logits_output, hidden_states
+            # --- === PPO 修改结束 === ---
         else:
+            # 保持 embedding 路径不变
             return self.pooler(hidden_states, forward_batch)
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):

@@ -50,21 +50,35 @@ def resolve_future_token_ids(input_ids, future_token_ids_map):
 # begin of soft thinking
 # ==========
 # TODO@Ao: 初始化topk info为-1 tensor而不是None
-@torch.compile(dynamic=True, backend=get_compiler_backend())
+# --- === PPO 修复: 移除 torch.compile 装饰器 === ---
+# @torch.compile(dynamic=True, backend=get_compiler_backend())
 def resolve_future_topk_info(
     topk_probs, topk_indices, future_topk_probs_map, future_topk_indices_map
 ):
     # 直接比较（topk_indices 已经是 Tensor，且 None 已被替换为 -1）
+    # 直接比较
     mask = topk_indices < 0
-    
+
+    # --- === PPO 修复 (Bug 2): 修复形状错误 === ---
+    # 原始的 'map[indices]' 索引是错误的，它会导致 [B, K, K] 形状
+    # 我们必须使用 torch.gather 来正确地按索引取值
+
+    # 1. 准备索引 (B, K)
+    indices = torch.clamp(-topk_indices, min=0)
+
+    # 2. 从 Map (N, K) 中 Gather (B, K)
+    #    (确保 indices 也是 Long 类型以匹配 gather 要求)
+    gathered_probs = future_topk_probs_map.gather(0, indices.long())
+    gathered_indices = future_topk_indices_map.gather(0, indices.long())
+
     topk_probs[:] = torch.where(
         mask,
-        future_topk_probs_map[torch.clamp(-topk_indices, min=0)],
+        gathered_probs,
         topk_probs,
     )
     topk_indices[:] = torch.where(
         mask,
-        future_topk_indices_map[torch.clamp(-topk_indices, min=0)],
+        gathered_indices,
         topk_indices,
     )
 # ==========
@@ -107,7 +121,7 @@ class TpModelWorkerClient:
         self.scheduler_stream = torch.get_device_module(self.device).current_stream()
         if self.device == "cpu":
             self.scheduler_stream.synchronize = lambda: None  # No-op for CPU
-        
+
         # ==========
         # begin of soft thinking
         # ==========
@@ -193,29 +207,29 @@ class TpModelWorkerClient:
                 soft_thinking_mask = sampling_info.soft_thinking_modes  # [batch_size]
                 # TODO: 这个逻辑有问题，是string
                 think_end_mask = (input_ids == self.think_end_str)  # [batch_size]
-                
+
                 # Only process sequences where soft_thinking_modes=True and input_id=think_end_str
                 update_mask = soft_thinking_mask & think_end_mask
-                
+
                 if update_mask.any():
                     # Reset soft_thinking_modes for matching sequences
                     sampling_info.soft_thinking_modes[update_mask] = False
-                    
+
                     # Reinitialize topk_probs and topk_indices as one-hot for matching sequences
                     topk_probs[update_mask] = float('nan')
                     topk_indices[update_mask] = -1
-                    
+
                     # Set one-hot probabilities and store input_id at the first position
                     topk_probs[update_mask, 0] = 1.0  # One-hot probability at index 0
                     topk_indices[update_mask, 0] = input_ids[update_mask]
 
                 # Update future_topk_info
                 resolve_future_topk_info(
-                    topk_probs, topk_indices, 
-                    self.future_topk_probs_map, 
+                    topk_probs, topk_indices,
+                    self.future_topk_probs_map,
                     self.future_topk_indices_map,
                 )
-                
+
                 batch_len = len(model_worker_batch.seq_lens)
                 future_slice = slice(future_token_ids_ct + 1, future_token_ids_ct + 1 + batch_len)
                 self.future_topk_probs_map[future_slice] = topk_probs

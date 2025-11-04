@@ -1,5 +1,6 @@
 """
 ppo_agent_model.py
+(已修改: 使用 "特征平衡" 结构, 将 H_t 和 L_t 投影到相同的维度)
 
 定义 PPO 控制器 (Agent) 的模型架构。
 这是一个 Actor-Critic (演员-评论家) 模型，用于决策 "Soft" vs "Hard"
@@ -8,11 +9,10 @@ ppo_agent_model.py
 import torch
 import torch.nn as nn
 from torch.distributions.categorical import Categorical
-import math # <--- 新增：导入 math 库以使用 log (ln)
+import math # <--- 导入 math 库以使用 log (ln)
 
 # --- 1. 共享主干 (Shared Backbone) ---
-# 负责将高维的 LLM 状态 (H_t) 和 Logits 特征 (L_t)
-# 压缩为低维的"状态摘要 (State Summary)"
+# (已修改：现在它将 *两个* 输入都投影到 summary_dim)
 
 class SharedBackbone(nn.Module):
     def __init__(self, hidden_state_dim: int, logits_feature_dim: int, summary_dim: int):
@@ -20,18 +20,16 @@ class SharedBackbone(nn.Module):
         初始化共享主干。
 
         参数:
-        hidden_state_dim (int): LLM 隐藏状态的维度 (例如 4096)，动态传入。
-        logits_feature_dim (int): Logits 特征的维度 (例如 Top-K=10)。
-        summary_dim (int): 我们希望压缩成的"状态摘要"维度 (例如 128)。
+        hidden_state_dim (int): LLM 隐藏状态的维度 (H_t)
+        logits_feature_dim (int): Logits 特征的维度 (L_t)
+        summary_dim (int): 我们希望将 *两个* 特征都压缩到的目标维度 (例如 64)
         """
         super().__init__()
 
-        # 核心层：将高维的 LLM 隐藏状态 "投影" (Projection)
-        # 到一个更小、更易于处理的维度
-        self.projection_layer = nn.Linear(hidden_state_dim, summary_dim)
-
-        # 假设 logits 特征维度已经很小，我们不再压缩
-        # 最终的"状态摘要"维度将是 summary_dim + logits_feature_dim
+        # <--- 修改：为 H_t 和 L_t 分别创建投影层 ---
+        self.h_projection_layer = nn.Linear(hidden_state_dim, summary_dim)
+        self.l_projection_layer = nn.Linear(logits_feature_dim, summary_dim)
+        # <--- 修改结束 ---
 
     def forward(self, H_t: torch.Tensor, L_t: torch.Tensor) -> torch.Tensor:
         """
@@ -42,17 +40,25 @@ class SharedBackbone(nn.Module):
         L_t (torch.Tensor): Logits 特征张量, shape [Batch, logits_feature_dim]
 
         返回:
-        torch.Tensor: 状态摘要张量, shape [Batch, summary_dim + logits_feature_dim]
+        torch.Tensor: 状态摘要张量, shape [Batch, summary_dim * 2]
         """
 
-        # 1. 压缩 LLM 隐藏状态
-        #    [B, 4096] -> [B, 128]
-        H_proj = self.projection_layer(H_t)
+        # 1. 压缩 LLM 隐藏状态 (H_t)
+        #    [B, 5120] -> [B, 64]
+        H_proj = self.h_projection_layer(H_t)
         H_proj = torch.relu(H_proj) # 添加非线性激活
 
-        # 2. 拼接
-        #    [B, 128] + [B, 10] -> [B, 138]
-        state_summary = torch.cat([H_proj, L_t.to(H_proj.dtype)], dim=-1)
+        # <--- 修改：压缩 Logits 特征 (L_t) ---
+        # 2. 压缩 Logits 特征 (L_t)
+        #    [B, 10] -> [B, 64]
+        #    我们必须确保 L_t 的 dtype 与 H_t 匹配以进行矩阵乘法
+        L_proj = self.l_projection_layer(L_t.to(H_t.dtype))
+        L_proj = torch.relu(L_proj)
+        # <--- 修改结束 ---
+
+        # 3. 拼接 (将两个 *同等重要* 的特征拼接)
+        #    [B, 64] + [B, 64] -> [B, 128]
+        state_summary = torch.cat([H_proj, L_proj], dim=-1)
 
         return state_summary
 
@@ -70,7 +76,11 @@ class ActorCriticAgent(nn.Module):
     def __init__(self,
                  hidden_state_dim: int,     # 必须! 从 config.hidden_size 动态传入
                  logits_feature_dim: int = 10,    # 假设我们用 Top-10 概率
-                 projection_dim: int = 128,     # "投影" 后的维度
+
+                 # <--- 修改：使用 "balanced_dim" 替代 "projection_dim" ---
+                 balanced_dim: int = 64,        # (推荐 64 或 128)
+                 # <--- 修改结束 ---
+
                  mlp_hidden_dim: int = 64):     # 决策MLP的隐藏维度
         """
         初始化 Actor-Critic Agent。
@@ -78,7 +88,7 @@ class ActorCriticAgent(nn.Module):
         参数:
         hidden_state_dim (int):     LLM 的隐藏状态维度 (config.hidden_size)。
         logits_feature_dim (int):   Logits 特征的维度 (例如 K=10)。
-        projection_dim (int):       投影层输出的维度。
+        balanced_dim (int):         H_t 和 L_t 投影到的平衡维度。
         mlp_hidden_dim (int):       Actor 和 Critic 头内部MLP的隐藏维度。
         """
         super().__init__()
@@ -86,18 +96,20 @@ class ActorCriticAgent(nn.Module):
         # 动作空间是固定的：{0: "Soft", 1: "Hard"}
         self.action_dim = 2
 
-        # 最终的"状态摘要"维度
-        summary_input_dim = projection_dim + logits_feature_dim
+        # <--- 修改：最终的"状态摘要"维度现在是 2 * balanced_dim ---
+        summary_input_dim = balanced_dim * 2 # (例如 64*2 = 128)
+        # <--- 修改结束 ---
 
         # --- 共享主干 (Backbone) ---
         self.backbone = SharedBackbone(
             hidden_state_dim,
             logits_feature_dim,
-            projection_dim
+            balanced_dim  # <--- 修改：传递 balanced_dim
         )
 
         # --- 演员头 (Actor Head) ---
         # 负责"决策"：输出 Soft/Hard 的概率
+        # (输入维度已自动更新为 summary_input_dim = 128)
         self.actor_head = nn.Sequential(
             nn.Linear(summary_input_dim, mlp_hidden_dim),
             nn.ReLU(),
@@ -106,6 +118,7 @@ class ActorCriticAgent(nn.Module):
 
         # --- 评论家头 (Critic Head) ---
         # 负责"估价"：输出 V 值
+        # (输入维度已自动更新为 summary_input_dim = 128)
         self.critic_head = nn.Sequential(
             nn.Linear(summary_input_dim, mlp_hidden_dim),
             nn.ReLU(),
@@ -158,15 +171,15 @@ class ActorCriticAgent(nn.Module):
         """
 
         # 1. 跑共享主干，获取"状态摘要"
-        # s_t = [B, 138]
+        # s_t = [B, 128]
         state_summary = self.backbone(H_t, L_t)
 
         # 2. 跑"演员头"，获取动作 Logits
-        # action_logits = [B, 2] (例如 [0.2, -0.5])
+        # action_logits = [B, 2] (例如 [2.2, 0.0])
         action_logits = self.actor_head(state_summary)
 
         # 3. 跑"评论家头"，获取 V 值
-        # v_value = [B, 1] (例如 [0.7])
+        # v_value = [B, 1] (例如 [0.0])
         v_value = self.critic_head(state_summary)
 
         # 4. 从 Logits 创建一个"概率分布"

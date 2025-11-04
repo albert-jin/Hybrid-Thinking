@@ -13,25 +13,29 @@ NUM_GPUS=4
 MAX_RUNNING_REQUESTS=64
 MEM_FRAC=0.8
 
-# --- 训练配置 (已更新为 Step-based 逻辑) ---
-TRAIN_DATASET_PATH="./datasets/train_gsm8k.json"           # (M) 主训练集
-WRONG_QUESTION_SET_PATH="./datasets/wrong_questions.json"  # (N) 错题本 (请确保此文件存在, 否则将只使用 M)
-WRONG_QUESTION_PROB=0.3                                    # (K) 30% 的概率从 N 中抽取
+# 训练配置
+TRAIN_DATASET_PATH="./datasets/train_gsm8k.json"
+WRONG_QUESTION_SET_PATH="./datasets/wrong_questions.json"
+WRONG_QUESTION_PROB=0.3
 
 TRAIN_BATCH_SIZE=64
-NUM_STEPS=5000                                             # (新) 总共训练 5000 个批次
-# NUM_EPOCHS=3                                             # (旧) 已被 NUM_STEPS 替代
+NUM_STEPS=20000
 
 SAVE_DIR="ppo_checkpoints/gsm8k_controller_$(date +%Y%m%d_%H%M%S)"
-SAVE_INTERVAL=100                                          # 每 100 步保存一次
-EVAL_INTERVAL=500                                          # 每 500 步验证一次
-# --- 更新结束 ---
+SAVE_INTERVAL=100
+EVAL_INTERVAL=500
 
-# 日志文件 (与之前相同)
+# <--- 新增：训练日志参数 ---
+LOG_TRAIN_RESULTS="--log_train_results" # <-- 开启日志
+TRAIN_LOG_INTERVAL=100                  # <-- 每 100 步保存一次日志并打印训练准确率
+# <--- 新增结束 ---
+
+# 日志文件
 LOG_FILE_PATH="${SAVE_DIR}.log"
 (
     echo "--- 启动 PPO 控制器 Step-Based 训练 ---"
     echo "日志将实时保存到: $LOG_FILE_PATH"
+    echo "详细训练结果将保存到: ${SAVE_DIR}/train_results_log.jsonl" # <--- 新增提示
     echo "模型路径: $MODEL_PATH"
     echo "保存目录: $SAVE_DIR"
     echo "--------------------------"
@@ -52,20 +56,24 @@ LOG_FILE_PATH="${SAVE_DIR}.log"
         --dataset_path "$TRAIN_DATASET_PATH" \
         --eval_dataset_path "/root/shared-nvme/gj/Hybrid-Thinking/datasets/gsm8k.json" \
         \
-        # <--- 新增的参数 ---
         --num_steps $NUM_STEPS \
         --wrong_question_set_path "$WRONG_QUESTION_SET_PATH" \
         --wrong_question_prob $WRONG_QUESTION_PROB \
         --eval_interval $EVAL_INTERVAL \
-        # <--- 新增结束 ---
         \
         --batch_size $TRAIN_BATCH_SIZE \
         --save_dir "$SAVE_DIR" \
         --save_interval $SAVE_INTERVAL \
         \
+        # <--- 新增的参数 ---
+        $LOG_TRAIN_RESULTS \
+        --train_log_interval $TRAIN_LOG_INTERVAL \
+        # <--- 新增结束 ---
+        \
         --api_base "https://api.deepseek.com/v1" \
         --api_key "$OPENAI_API_KEY" \
         --judge_model_name "deepseek-chat" \
+        --use_llm_judge \
         \
         --max_generated_tokens 1024 \
         --temperature 0.6 \

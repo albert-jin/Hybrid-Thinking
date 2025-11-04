@@ -103,21 +103,37 @@ def run_validation(llm, eval_samples, tokenizer, args, MATH_QUERY_TEMPLATE, resu
             for i, output in enumerate(outputs):
                 generated_text = output["text"]
                 ground_truth = batch_ground_truth[i]
-                sample = batch_samples[i] # 获取对应的原始样本
+                sample = batch_samples[i]
 
-                # 使用 matheval 在客户端判断
-                judge_result, _ = matheval.evaluator_map["gsm8k"].rule_judge(
+                # 1. 规则评估
+                rule_judge_result, extracted_answer = matheval.evaluator_map["gsm8k"].rule_judge(
                     generated_text,
                     ground_truth,
                     True
                 )
 
-                if judge_result:
+                # 2. LLM 评估 (如果规则失败且已启用)
+                llm_judge_result = None
+                if not rule_judge_result and args.use_llm_judge:
+                    try:
+                        llm_judge_result = matheval.evaluator_map["gsm8k"].llm_judge(
+                            generated_text,
+                            ground_truth,
+                            extracted_answer,
+                            True
+                        )
+                    except Exception as e:
+                        print(f"LLM Judge 失败: {e}")
+                        llm_judge_result = False  # 评判失败，算作错误
+
+                # 3. 最终结果
+                finally_judge_result = rule_judge_result or llm_judge_result
+
+                if finally_judge_result:
                     total_correct += 1
                 total_processed += 1
 
-                # <--- 构建并保存 result 字典 ---
-                pass_val = 1.0 if judge_result else 0.0
+                pass_val = 1.0 if finally_judge_result else 0.0
                 result_dict = {
                     "hyperparams": str(args),
                     "prompt": sample["prompt"][0]["value"],
@@ -125,28 +141,27 @@ def run_validation(llm, eval_samples, tokenizer, args, MATH_QUERY_TEMPLATE, resu
                     "ground_truth": ground_truth,
                     "generated_tokens": [output["meta_info"]["completion_tokens"]],
                     "avg_generated_tokens": output["meta_info"]["completion_tokens"],
-                    "idx": sample["original_idx"], # 使用我们添加的原始索引
+                    "idx": sample["original_idx"],
                     "n": 1,
                     "finish_generation": [output["meta_info"]["finish_reason"]],
-                    "judge_info": [{"rule_judge_result": judge_result, "llm_judge_result": None, "finally_judge_result": judge_result}],
+                    # <--- 修改：保存详细的 judge_info ---
+                    "judge_info": [{"rule_judge_result": rule_judge_result, "llm_judge_result": llm_judge_result,
+                                    "finally_judge_result": finally_judge_result}],
                     "passat1": pass_val,
                     "passat1_list": [pass_val],
-
-                    # --- PPO/Soft 专属中间内容 (从 meta_info 获取) ---
-                    "output_topk_probs_list": output["meta_info"].get("output_topk_probs_list"),
-                    "output_topk_indices_list": output["meta_info"].get("output_topk_indices_list"),
-                    # "output_last_hidden_state_list": output["meta_info"].get("output_last_hidden_state_list"), # <--- 已注释掉
-
-                    # --- Logprobs (从 meta_info 获取) ---
-                    "input_token_logprobs": output["meta_info"].get("input_token_logprobs"),
-                    "output_token_logprobs": output["meta_info"].get("output_token_logprobs"),
-                    "input_top_logprobs": output["meta_info"].get("input_top_logprobs"),
-                    "output_top_logprobs": output["meta_info"].get("output_top_logprobs"),
-                    "input_token_ids_logprobs": output["meta_info"].get("input_token_ids_logprobs"),
-                    "output_token_ids_logprobs": output["meta_info"].get("output_token_ids_logprobs"),
+                    #
+                    # "output_topk_probs_list": output["meta_info"].get("output_topk_probs_list"),
+                    # "output_topk_indices_list": output["meta_info"].get("output_topk_indices_list"),
+                    #
+                    # "input_token_logprobs": output["meta_info"].get("input_token_logprobs"),
+                    # "output_token_logprobs": output["meta_info"].get("output_token_logprobs"),
+                    # "input_top_logprobs": output["meta_info"].get("input_top_logprobs"),
+                    # "output_top_logprobs": output["meta_info"].get("output_top_logprobs"),
+                    # "input_token_ids_logprobs": output["meta_info"].get("input_token_ids_logprobs"),
+                    # "output_token_ids_logprobs": output["meta_info"].get("output_token_ids_logprobs"),
                 }
                 results_list.append(result_dict)
-                # <--- 字典构建结束 ---
+                # --- 修改结束 ---
 
             current_accuracy = (total_correct / total_processed) * 100
             eval_iterator.set_description(f"评估中 (准确率: {current_accuracy:.2f}%)")
@@ -199,7 +214,7 @@ def main():
     parser.add_argument('--api_base', type=str, default=None, help='API base for LLM judge')
     parser.add_argument('--api_key', type=str, default=None, help='API key for LLM judge')
     parser.add_argument('--judge_model_name', type=str, default="gpt-4.1-2025-04-14", help='Judge LLM model name')
-
+    parser.add_argument('--use_llm_judge', action='store_true', help='(评估)如果规则评估失败，是否使用 LLM Judge')
     # 生成参数
     parser.add_argument('--max_generated_tokens', type=int, default=1024)
     parser.add_argument('--temperature', type=float, default=0.6)
@@ -270,6 +285,7 @@ def main():
         enable_soft_thinking=args.enable_soft_thinking,
         max_topk=args.max_topk,
         ppo_agent_checkpoint_path=args.ppo_agent_checkpoint_path,
+        use_llm_judge=args.use_llm_judge
     )
     print("sglang.Engine initialized.")
 

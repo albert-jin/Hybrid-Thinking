@@ -211,6 +211,7 @@ class ServerArgs:
     # <--- 新增结束 ---
     ppo_save_dir: str = "ppo_checkpoints"
     ppo_save_interval: int = 50 # 每 N 步保存一次
+    use_llm_judge: bool = False
     # --- PPO 阶段四 插入 (结束) ---
     # ==========
     # end of soft thinking

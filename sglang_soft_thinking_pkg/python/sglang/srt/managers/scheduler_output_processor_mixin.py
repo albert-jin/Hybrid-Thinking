@@ -830,22 +830,41 @@ class SchedulerOutputProcessorMixin:
                     # 检查2: 请求是否已完成
                     # 检查3: "正确答案"是否已通过 sampling_params 传入
                     if (req.rid in self.ppo_trajectory_storage and
-                        req.sampling_params.ground_truth is not None): # <-- 修复点 1
+                        req.sampling_params.ground_truth is not None):
 
                         try:
-                            # 1. 获取最终文本 (使用我们刚添加的方法)
-                            final_text = req.get_full_output_text() # <-- 修复点 2
+                            final_text = req.get_full_output_text()
+                            ground_truth = req.sampling_params.ground_truth
 
-                            # 2. 计算最终奖励 R_T
-                            # (我们硬编码 "gsm8k" 评判器)
-                            judge_result, _ = matheval.evaluator_map["gsm8k"].rule_judge(
+                            # 1. 规则评估
+                            rule_judge_result, extracted_answer = matheval.evaluator_map["gsm8k"].rule_judge(
                                 final_text,
-                                req.sampling_params.ground_truth, # <-- 修复点 1
+                                ground_truth,
                                 True
                             )
-                            final_reward = 1.0 if judge_result else 0.0
 
-                            # 3. 触发训练
+                            # 2. LLM 评估 (如果规则失败且已启用)
+                            #    我们从 sampling_params 中获取 use_llm_judge 标志
+                            use_llm_judge_flag = req.sampling_params.use_llm_judge
+                            llm_judge_result = None
+
+                            if not rule_judge_result and use_llm_judge_flag:
+                                try:
+                                    llm_judge_result = matheval.evaluator_map["gsm8k"].llm_judge(
+                                        final_text,
+                                        ground_truth,
+                                        extracted_answer,
+                                        True
+                                    )
+                                except Exception as e_judge:
+                                    logger.error(f"PPO: LLM Judge 失败 for rid: {req.rid}. Error: {e_judge}")
+                                    llm_judge_result = False  # 评判失败，算作错误
+
+                            # 3. 计算最终奖励 R_T
+                            finally_judge_result = rule_judge_result or llm_judge_result
+                            final_reward = 1.0 if finally_judge_result else 0.0
+
+                            # 4. 触发训练
                             self._train_ppo_agent(req.rid, final_reward)
 
                         except Exception as e:

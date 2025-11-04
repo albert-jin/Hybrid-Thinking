@@ -67,6 +67,7 @@ echo "详细JSON结果将保存到: $OUTPUT_DIR"
         --api_base "https://api.deepseek.com/v1" \
         --api_key "$OPENAI_API_KEY" \
         --judge_model_name "deepseek-chat" \
+        --use_llm_judge \
         \
         --max_generated_tokens 1024 \
         --temperature 0.6 \

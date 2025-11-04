@@ -465,7 +465,8 @@ class Scheduler(
                 self.ppo_agent = ActorCriticAgent(
                     hidden_state_dim=dynamic_hidden_dim,
                     logits_feature_dim=10, # 必须与 L_t 维度匹配 (K=10)
-                    projection_dim=128
+                    balanced_dim=64,       # <--- 修复：使用新的参数名
+                    mlp_hidden_dim=64        # <--- (确保所有参数都已传递)
                 ).to(self.device)
 
                 # 3. 实例化优化器
@@ -497,6 +498,7 @@ class Scheduler(
 
                 # 将 Agent 默认设置为评估模式。训练脚本会自己调用 .train()
                 self.ppo_agent.eval()
+                self.use_llm_judge = getattr(server_args, "use_llm_judge", False)
                 # <--- 新增结束 ---
                 logger.info(f"PPO Agent dtype converted to: {llm_dtype}")
                 # --- === PPO 修复 (结束) === ---

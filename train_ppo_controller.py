@@ -358,7 +358,7 @@ def main():
                 "ground_truth": ground_truth_answer,
                 "n": 1,
                 "soft_hard_action": None,
-                "use_llm_judge": args.use_llm_judge
+                # "use_llm_judge": args.use_llm_judge
             }
             prompts_list.append(chat_prompt)
             sampling_params_list.append(sampling_params_dict)

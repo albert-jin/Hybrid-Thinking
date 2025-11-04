@@ -845,7 +845,7 @@ class SchedulerOutputProcessorMixin:
 
                             # 2. LLM 评估 (如果规则失败且已启用)
                             #    我们从 sampling_params 中获取 use_llm_judge 标志
-                            use_llm_judge_flag = req.sampling_params.use_llm_judge
+                            use_llm_judge_flag = self.use_llm_judge
                             llm_judge_result = None
 
                             if not rule_judge_result and use_llm_judge_flag:

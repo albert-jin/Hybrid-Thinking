@@ -8,6 +8,7 @@ ppo_agent_model.py
 import torch
 import torch.nn as nn
 from torch.distributions.categorical import Categorical
+import math # <--- 新增：导入 math 库以使用 log (ln)
 
 # --- 1. 共享主干 (Shared Backbone) ---
 # 负责将高维的 LLM 状态 (H_t) 和 Logits 特征 (L_t)
@@ -110,6 +111,27 @@ class ActorCriticAgent(nn.Module):
             nn.ReLU(),
             nn.Linear(mlp_hidden_dim, 1) # 输出 1 个 V-value
         )
+
+        # <--- 新增：初始化偏置（Prior）为 90% Soft ---
+        # 目标: Softmax([logit_soft, logit_hard]) = [0.9, 0.1]
+        # 这需要 logit_soft - logit_hard = ln(0.9 / 0.1) = ln(9)
+        initial_soft_bias = math.log(9.0) # approx 2.197
+
+        # 1. 初始化 Actor Head 的最后一层 (索引 2)
+        final_actor_layer = self.actor_head[2]
+        # 将权重初始化为 0，使初始决策仅受偏置影响
+        torch.nn.init.constant_(final_actor_layer.weight, 0.0)
+        # 设置偏置：[logit_soft, logit_hard]
+        torch.nn.init.constant_(final_actor_layer.bias, 0.0)
+        # 我们假设动作 0 是 "Soft"
+        final_actor_layer.bias.data[0] = initial_soft_bias
+
+        # 2. (推荐) 初始化 Critic Head 的最后一层 (索引 2)
+        # 使 Agent 初始时对 V-value 的预测为 0 (中立)
+        final_critic_layer = self.critic_head[2]
+        torch.nn.init.constant_(final_critic_layer.weight, 0.0)
+        torch.nn.init.constant_(final_critic_layer.bias, 0.0)
+        # <--- 新增结束 ---
 
     def get_action_and_value(self, H_t: torch.Tensor, L_t: torch.Tensor,
                              action: torch.Tensor = None):

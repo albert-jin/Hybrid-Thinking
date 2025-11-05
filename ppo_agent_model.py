@@ -1,9 +1,10 @@
 """
 ppo_agent_model.py
-(已修改: 使用 "特征平衡" 结构, 将 H_t 和 L_t 投影到相同的维度)
+(已修改: 1. 使用 "特征平衡" 结构)
+(已修改: 2. 扩展为 3 动作空间: Soft, Hard, Stop)
 
 定义 PPO 控制器 (Agent) 的模型架构。
-这是一个 Actor-Critic (演员-评论家) 模型，用于决策 "Soft" vs "Hard"
+这是一个 Actor-Critic (演员-评论家) 模型，用于决策 "Soft" vs "Hard" vs "Stop"
 """
 
 import torch
@@ -69,7 +70,7 @@ class ActorCriticAgent(nn.Module):
     PPO Actor-Critic Agent (控制器)
 
     该模型接收 LLM 的 (H_t, L_t) 作为状态，并并行输出：
-    1. Actor: 动作 {Soft, Hard} 的概率
+    1. Actor: 动作 {Soft, Hard, Stop} 的概率
     2. Critic: 当前状态的 V 值 (预期回报)
     """
 
@@ -93,8 +94,11 @@ class ActorCriticAgent(nn.Module):
         """
         super().__init__()
         self.logits_feature_dim = logits_feature_dim
-        # 动作空间是固定的：{0: "Soft", 1: "Hard"}
-        self.action_dim = 2
+
+        # <--- 3-ACTION 修改: 动作空间变为 3 ---
+        # 动作空间是: {0: "Soft", 1: "Hard", 2: "Stop"}
+        self.action_dim = 3
+        # <--- 3-ACTION 修改结束 ---
 
         # <--- 修改：最终的"状态摘要"维度现在是 2 * balanced_dim ---
         summary_input_dim = balanced_dim * 2 # (例如 64*2 = 128)
@@ -108,12 +112,12 @@ class ActorCriticAgent(nn.Module):
         )
 
         # --- 演员头 (Actor Head) ---
-        # 负责"决策"：输出 Soft/Hard 的概率
+        # 负责"决策"：输出 Soft/Hard/Stop 的概率
         # (输入维度已自动更新为 summary_input_dim = 128)
         self.actor_head = nn.Sequential(
             nn.Linear(summary_input_dim, mlp_hidden_dim),
             nn.ReLU(),
-            nn.Linear(mlp_hidden_dim, self.action_dim) # 输出 2 个 Logits
+            nn.Linear(mlp_hidden_dim, self.action_dim) # 输出 3 个 Logits
         )
 
         # --- 评论家头 (Critic Head) ---
@@ -125,26 +129,33 @@ class ActorCriticAgent(nn.Module):
             nn.Linear(mlp_hidden_dim, 1) # 输出 1 个 V-value
         )
 
-        # <--- 新增：初始化偏置（Prior）为 90% Soft ---
-        # 目标: Softmax([logit_soft, logit_hard]) = [0.9, 0.1]
-        # 这需要 logit_soft - logit_hard = ln(0.9 / 0.1) = ln(9)
+        # <--- 3-ACTION 修改：初始化 3 动作的偏置（Prior）---
+        # 目标: [Soft, Hard, Stop] = [高, 中, 极低]
+        # 保持 Soft:Hard 约为 9:1 的比例
         initial_soft_bias = math.log(9.0) # approx 2.197
+        initial_hard_bias = 0.0
+        # 强烈抑制 "Stop" 动作，让 Agent 慢慢学习
+        initial_stop_bias = -5.0 # (e.g., exp(-5) 约等于 0.0067)
 
         # 1. 初始化 Actor Head 的最后一层 (索引 2)
         final_actor_layer = self.actor_head[2]
         # 将权重初始化为 0，使初始决策仅受偏置影响
         torch.nn.init.constant_(final_actor_layer.weight, 0.0)
-        # 设置偏置：[logit_soft, logit_hard]
-        torch.nn.init.constant_(final_actor_layer.bias, 0.0)
-        # 我们假设动作 0 是 "Soft"
+
+        # 我们假设 0=Soft, 1=Hard, 2=Stop
+        # 设置偏置：[logit_soft, logit_hard, logit_stop]
+        torch.nn.init.constant_(final_actor_layer.bias, 0.0) # 先清零
         final_actor_layer.bias.data[0] = initial_soft_bias
+        final_actor_layer.bias.data[1] = initial_hard_bias
+        final_actor_layer.bias.data[2] = initial_stop_bias
+        # <--- 3-ACTION 修改结束 ---
+
 
         # 2. (推荐) 初始化 Critic Head 的最后一层 (索引 2)
         # 使 Agent 初始时对 V-value 的预测为 0 (中立)
         final_critic_layer = self.critic_head[2]
         torch.nn.init.constant_(final_critic_layer.weight, 0.0)
         torch.nn.init.constant_(final_critic_layer.bias, 0.0)
-        # <--- 新增结束 ---
 
     def get_action_and_value(self, H_t: torch.Tensor, L_t: torch.Tensor,
                              action: torch.Tensor = None):
@@ -175,7 +186,7 @@ class ActorCriticAgent(nn.Module):
         state_summary = self.backbone(H_t, L_t)
 
         # 2. 跑"演员头"，获取动作 Logits
-        # action_logits = [B, 2] (例如 [2.2, 0.0])
+        # action_logits = [B, 3] (例如 [2.2, 0.0, -5.0])
         action_logits = self.actor_head(state_summary)
 
         # 3. 跑"评论家头"，获取 V 值

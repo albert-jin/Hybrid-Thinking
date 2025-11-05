@@ -603,6 +603,7 @@ class Req:
             # --- PPO H_t 存储结束 ---
             # track consecutive low entropy steps for early stopping
             self.low_entropy_steps = 0
+            self.ppo_is_thinking = True
         # ==========
         # end of soft thinking
         # ==========

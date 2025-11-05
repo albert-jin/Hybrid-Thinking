@@ -2120,12 +2120,15 @@ class Scheduler(
         # 从后往前计算 GAE
         for t in reversed(range(len(rewards))):
             # 最后一个奖励是最终奖励 R_T
-            if t == len(rewards) - 1:
-                rewards[t] = final_R_T
+            # if t == len(rewards) - 1:
+            #     rewards[t] = final_R_T
 
             # 1. 计算 TD 误差 (delta)
             #    delta_t = r_t + gamma * V(s_{t+1}) - V(s_t)
-            delta = rewards[t] + gamma * next_v_value - v_values[t]
+            r_t = rewards[t]
+
+            delta = r_t + gamma * next_v_value - v_values[t]
+            # delta = rewards[t] + gamma * next_v_value - v_values[t]
 
             # 2. 计算 GAE
             #    A_t = delta_t + gamma * gae_lambda * A_{t+1}
@@ -2159,20 +2162,29 @@ class Scheduler(
             actions = [exp["action"] for exp in trajectory]
             old_log_probs = [exp["log_prob"] for exp in trajectory]
             v_values = [exp["v_value"] for exp in trajectory]
-            rewards = [exp["reward"] for exp in trajectory] # (大部分是 0)
+            rewards = [exp["reward"] for exp in trajectory]  # (这是全 0 列表)
 
-            # --- PPO 超参数 (应放入 server_args) ---
+            # --- vvv 新增/修改 vvv ---
+
+            # 1. 将最终奖励R分配给轨迹中的 *最后一步*
+            if rewards:
+                rewards[-1] = final_reward
+
+                # --- PPO 超参数 ... ---
             GAMMA = 0.99
             GAE_LAMBDA = 0.95
             PPO_UPDATE_EPOCHS = 4
-            VF_COEF = 0.5  # Critic 损失的权重
-            ENT_COEF = 0.01 # 熵奖励的权重
-            CLIP_EPS = 0.2  # PPO 裁剪系数
+            VF_COEF = 0.5
+            ENT_COEF = 0.01
+            CLIP_EPS = 0.2
             # --- ---
 
-            # 3. 计算 Advantage 和 Returns
+            # 3. 计算 GAE 和 Returns
             advantages, returns = self._compute_gae_and_returns(
-                rewards, v_values, final_reward, GAMMA, GAE_LAMBDA
+                rewards, v_values,
+                final_R_T=0.0,  # <--- 关键改动：终止状态的价值为 0
+                gamma=GAMMA,
+                gae_lambda=GAE_LAMBDA
             )
 
             # 4. 转换为 Tensors

@@ -336,45 +336,88 @@ class SchedulerOutputProcessorMixin:
         # --- === PPO 阶段四 决策 (开始) === ---
         actions_list = []
         if self.enable_soft_thinking:
-            # <--- 修改：检查来自客户端的强制模式 ---
-            # 0 = 强制 Soft, 1 = 强制 Hard, None = PPO 动态决策
-            forced_action = batch.reqs[0].sampling_params.soft_hard_action
+            # 1. 提取 H_t 和 L_t 特征 (不变)
+            H_t = last_hidden_state  # [B, H]
+            K_dim = self.ppo_agent.logits_feature_dim
+            L_t_probs = logits_output.topk_probs  # [B, K_actual]
 
-            if forced_action is None:
-                # --- 模式 1: PPO 动态决策 (Agent 决定) ---
-                H_t = last_hidden_state # [B, H]
-                K_dim = self.ppo_agent.logits_feature_dim
-                L_t_probs = logits_output.topk_probs # [B, K_actual]
+            # 确保 L_t 维度匹配
+            if L_t_probs.shape[1] < K_dim:
+                pad = (0, K_dim - L_t_probs.shape[1])
+                L_t = torch.nn.functional.pad(L_t_probs, pad, "constant", 0)
+            else:
+                L_t = L_t_probs[:, :K_dim]
 
-                if L_t_probs.shape[1] < K_dim:
-                    pad = (0, K_dim - L_t_probs.shape[1])
-                    L_t = torch.nn.functional.pad(L_t_probs, pad, "constant", 0)
-                else:
-                    L_t = L_t_probs[:, :K_dim]
+            # 2. 遍历批次中的每个请求，应用状态机
+            actions_list = [0] * batch.batch_size()  # 默认为 Soft (动作0)
 
-                actions, log_probs, _, v_values = self.ppo_agent.get_action_and_value(H_t, L_t)
-                actions_list = actions.tolist() # [0, 1, 1, 0, ...]
+            for i, req in enumerate(batch.reqs):
+                if req.finished():
+                    actions_list[i] = 0  # (已完成的请求，随便设置一个)
+                    continue
 
-                # --- 轨迹存储 (仅在 ground_truth 存在时 - 即训练时) ---
-                if batch.reqs[0].sampling_params.ground_truth is not None:
-                    for i, req in enumerate(batch.reqs):
+                # 3. 检查此请求是否受 PPO 控制 (即 force_mode=ppo)
+                if "is_ppo_controlled" not in req.meta:
+                    req.meta["is_ppo_controlled"] = (req.sampling_params.soft_hard_action is None)
+
+                if not req.meta["is_ppo_controlled"]:
+                    # 这是 --force_mode soft/hard，使用客户端的强制动作
+                    actions_list[i] = req.sampling_params.soft_hard_action
+                    continue
+
+                # --- PPO 3-Action 状态机逻辑 ---
+
+                if req.ppo_is_thinking:
+                    # 4. 状态：仍在思考
+                    req_H_t = H_t[i].unsqueeze(0)
+                    req_L_t = L_t[i].unsqueeze(0)
+
+                    # 5. 调用 PPO Agent (它现在会输出 0, 1, 或 2)
+                    action_tensor, log_prob, entropy, v_value = \
+                        self.ppo_agent.get_action_and_value(req_H_t, req_L_t, action=None)
+
+                    action_item = action_tensor.item()
+                    actions_list[i] = action_item  # 记录动作
+
+                    # 6. 存储这一步的经验 (仅在训练时)
+                    if req.sampling_params.ground_truth is not None:
+                        # 确保 rid 已在存储中
                         if req.rid not in self.ppo_trajectory_storage:
                             self.ppo_trajectory_storage[req.rid] = []
 
-                        experience = {
-                            "H_t": H_t[i].cpu().detach(),
-                            "L_t": L_t[i].cpu().detach(),
-                            "action": actions[i].cpu().detach(),
-                            "v_value": v_values[i].cpu().detach(),
-                            "log_prob": log_probs[i].cpu().detach(),
-                            "reward": 0.0 # 奖励将在 stream_output 中设置
-                        }
-                        self.ppo_trajectory_storage[req.rid].append(experience)
+                        self.ppo_trajectory_storage[req.rid].append(
+                            {
+                                "H_t": req_H_t.squeeze(0).cpu(),  # 存储在 CPU 节省显存
+                                "L_t": req_L_t.squeeze(0).cpu(),
+                                "action": action_tensor.squeeze(0).cpu(),
+                                "log_prob": log_prob.squeeze(0).cpu(),
+                                "v_value": v_value.squeeze(0).cpu(),
+                                "reward": 0.0,  # 奖励在最后才分配
+                            }
+                        )
 
-            else:
-                # --- 模式 2: 强制静态模式 (客户端决定) ---
-                # logger.info(f"PPO: 强制使用静态模式: {'Soft' if forced_action == 0 else 'Hard'}")
-                actions_list = [forced_action] * batch.batch_size()
+                    # 7. 核心：根据动作更新状态机
+                    if action_item == 2:
+                        # 动作 2: Stop
+                        logger.info(f"PPO Agent triggered STOP for rid: {req.rid}")
+                        req.ppo_is_thinking = False  # !!! 状态机切换 !!!
+
+                else:
+                    # 8. 状态：思考已停止
+                    #    - 不再调用 PPO Agent
+                    #    - 不再存储轨迹
+                    #    - 强制永久使用 Hard 模式
+                    actions_list[i] = 1  # 1 = Hard
+
+            # 9. (PPO 执行) 将动作列表转换为 SGLang 引擎的内部指令
+            for i, req in enumerate(batch.reqs):
+                if req.meta.get("is_ppo_controlled", False):
+                    action_item = actions_list[i]
+                    if action_item == 0:
+                        req.sampling_params.soft_hard_action = 0  # Soft
+                    else:
+                        # 动作 1 (Hard) 和 2 (Stop) 都执行 Hard 步
+                        req.sampling_params.soft_hard_action = 1  # Hard
             # <--- 修改结束 ---
         # --- === PPO 阶段四 决策 (结束) === ---
 
@@ -744,8 +787,10 @@ class SchedulerOutputProcessorMixin:
         # ==========
         # --- === PPO 修改点 1: 初始化 H_t 列表 === ---
         output_last_hidden_state_list = []
+        judge_info_list = []  # <--- 初始化评判结果列表
         # --- === PPO 修改结束 === ---
         for req in reqs:
+            judge_info = None  # <--- 在每个循环开始时重置
             if req is skip_req:
                 continue
 
@@ -824,6 +869,7 @@ class SchedulerOutputProcessorMixin:
                     output_last_hidden_state_list.append(
                         req.get_output_last_hidden_state_list()
                     )
+                    judge_info_list.append(judge_info)
                     # --- === PPO 阶段四 触发 "Learn" (开始) === ---
 
                     # 检查1: 是否处于 PPO 模式
@@ -863,7 +909,11 @@ class SchedulerOutputProcessorMixin:
                             # 3. 计算最终奖励 R_T
                             finally_judge_result = rule_judge_result or llm_judge_result
                             final_reward = 1.0 if finally_judge_result else 0.0
-
+                            judge_info = {
+                                "rule_judge_result": rule_judge_result,
+                                "llm_judge_result": llm_judge_result,
+                                "finally_judge_result": finally_judge_result
+                            }
                             # 4. 触发训练
                             self._train_ppo_agent(req.rid, final_reward)
 
@@ -923,6 +973,7 @@ class SchedulerOutputProcessorMixin:
                     output_topk_indices_list,
                     # --- === PPO 修改点 3: 插入 H_t 列表 (修复错位) === ---
                     output_last_hidden_state_list,
+                    judge_info_list,
                     # --- === PPO 修改结束 === ---
                     # ==========
                     # end of soft thinking

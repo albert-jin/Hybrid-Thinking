@@ -19,7 +19,7 @@ WRONG_QUESTION_SET_PATH="./datasets/wrong_questions.json"
 WRONG_QUESTION_PROB=0.3
 
 TRAIN_BATCH_SIZE=64
-NUM_STEPS=20000
+NUM_STEPS=1500
 
 SAVE_DIR="ppo_checkpoints/gsm8k_controller_$(date +%Y%m%d_%H%M%S)"
 SAVE_INTERVAL=100

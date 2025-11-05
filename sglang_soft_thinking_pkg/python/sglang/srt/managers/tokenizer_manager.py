@@ -1069,6 +1069,8 @@ class TokenizerManager:
                 meta_info["output_last_hidden_state_list"] = (
                     recv_obj.output_last_hidden_state_list[i]
                 )
+                if recv_obj.judge_info_list is not None:
+                    meta_info["judge_info"] = recv_obj.judge_info_list[i]
                 # <--- 修复结束 ---
 
             if not isinstance(recv_obj, BatchEmbeddingOut):

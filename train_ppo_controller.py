@@ -387,57 +387,51 @@ def main():
                 sample = batch_list[i]
                 source = batch_sources[i]  # 获取来源
                 sample_id = sample.get("original_idx", f"unknown_id_{random.randint(1000, 9999)}")
-
                 generated_text = output["text"]
                 ground_truth = sample["final_answer"]
 
-                # --- 执行评估 (用于统计和动态更新) ---
-                rule_judge_result, extracted_answer = matheval.evaluator_map["gsm8k"].rule_judge(
-                    generated_text,
-                    ground_truth,
-                    True
-                )
+                # --- vvv 从这里开始替换 vvv ---
 
-                llm_judge_result = None
-                if not rule_judge_result and args.use_llm_judge:
-                    try:
-                        llm_judge_result = matheval.evaluator_map["gsm8k"].llm_judge(
-                            generated_text,
-                            ground_truth,
-                            extracted_answer,
-                            True
-                        )
-                    except Exception as e_judge:
-                        print(f"LLM Judge (训练日志) 失败: {e_judge}")
-                        llm_judge_result = False
+                # 1. 从后端获取已计算的评判结果
+                judge_info = output["meta_info"].get("judge_info")
 
-                finally_judge_result = rule_judge_result or llm_judge_result
+                if judge_info is None:
+                    # 这不是一个训练请求 (e.g., ground_truth=None)
+                    # 或者后端没有返回评判结果，跳过
+                    print(f"Warning: No judge_info found in meta_info for {sample_id}. Skipping notebook/log update.")
+                    continue
+
+                # 2. 解包结果 (现在我们有了所有信息)
+                rule_judge_result = judge_info.get("rule_judge_result")
+                llm_judge_result = judge_info.get("llm_judge_result")
+                finally_judge_result = judge_info.get("finally_judge_result")
+
+                if finally_judge_result is None:
+                    print(f"Error: judge_info dict is incomplete for {sample_id}. Skipping.")
+                    continue
 
                 if finally_judge_result:
                     train_stats_correct += 1
                 train_stats_total += 1
                 pass_val = 1.0 if finally_judge_result else 0.0
-                # --- 评估结束 ---
 
-                # --- !!! 动态错题本逻辑 !!! ---
+                # --- ^^^ 替换结束 ^^^ ---
+
+                # --- 评估结束 --- (这行保留)
+
+                # --- !!! 动态错题本逻辑 !!! --- (这行保留)
                 if finally_judge_result == True:
                     # 答对了
                     if source == "N" and sample_id in wrong_question_set_ids:
                         # 答对了 *错题本* 中的题，将其移除
                         wrong_question_set_ids.remove(sample_id)
-                        # (为了效率，我们只从 ID 集合中移除，列表 N 会慢慢变“脏”，但不会出错)
-                        # (如果需要从列表中精确删除，会很慢)
-                        # <--- 改进：我们还是从列表中删除 ---
                         wrong_question_set = [q for q in wrong_question_set if q.get("original_idx") != sample_id]
-                        # print(f"  [动态错题本] 样本 {sample_id} 已解决，已移出错题本。")
-
                 else:
                     # 答错了
                     if source == "M" and sample_id not in wrong_question_set_ids:
                         # 答错了 *主训练集* 的题，将其加入
                         wrong_question_set.append(sample)
                         wrong_question_set_ids.add(sample_id)
-                        # print(f"  [动态错题本] 样本 {sample_id} 答错，已加入错题本。")
                 # --- 动态逻辑结束 ---
 
                 # --- 构建日志字典 (仅在开启日志时) ---
@@ -452,18 +446,20 @@ def main():
                         "idx": sample_id,
                         "n": 1,
                         "finish_generation": [output["meta_info"]["finish_reason"]],
+
+                        # (这里的 'judge_info' 变量现在来自 meta_info，可以被正确记录)
                         "judge_info": [{"rule_judge_result": rule_judge_result, "llm_judge_result": llm_judge_result,
                                         "finally_judge_result": finally_judge_result}],
                         "passat1": pass_val,
                         "passat1_list": [pass_val],
-                        "output_topk_probs_list": output["meta_info"].get("output_topk_probs_list"),
-                        "output_topk_indices_list": output["meta_info"].get("output_topk_indices_list"),
-                        "input_token_logprobs": output["meta_info"].get("input_token_logprobs"),
-                        "output_token_logprobs": output["meta_info"].get("output_token_logprobs"),
-                        "input_top_logprobs": output["meta_info"].get("input_top_logprobs"),
-                        "output_top_logprobs": output["meta_info"].get("output_top_logprobs"),
-                        "input_token_ids_logprobs": output["meta_info"].get("input_token_ids_logprobs"),
-                        "output_token_ids_logprobs": output["meta_info"].get("output_token_ids_logprobs"),
+                        # "output_topk_probs_list": output["meta_info"].get("output_topk_probs_list"),
+                        # "output_topk_indices_list": output["meta_info"].get("output_topk_indices_list"),
+                        # "input_token_logprobs": output["meta_info"].get("input_token_logprobs"),
+                        # "output_token_logprobs": output["meta_info"].get("output_token_logprobs"),
+                        # "input_top_logprobs": output["meta_info"].get("input_top_logprobs"),
+                        # "output_top_logprobs": output["meta_info"].get("output_top_logprobs"),
+                        # "input_token_ids_logprobs": output["meta_info"].get("input_token_ids_logprobs"),
+                        # "output_token_ids_logprobs": output["meta_info"].get("output_token_ids_logprobs"),
                     }
                     train_results_buffer.append(result_dict)
 

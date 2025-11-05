@@ -609,6 +609,7 @@ class BatchTokenIDOut:
     output_topk_indices_list: List[List[List[int]]]
     # --- PPO H_t 存储 ---
     output_last_hidden_state_list: List[List[List[float]]]
+    judge_info_list: Optional[List[dict]] = None
     # --- PPO H_t 存储结束 ---
     # ==========
     # end of soft thinking

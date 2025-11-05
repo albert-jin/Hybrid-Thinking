@@ -78,6 +78,12 @@ def run_validation(llm, eval_samples, tokenizer, args, MATH_QUERY_TEMPLATE, resu
                 "think_end_str": args.think_end_str,
                 "n": 1,
                 "soft_hard_action": action_value, # <--- 修改：传递 0, 1, 或 None
+                # --- vvv 新增 vvv ---
+                # (PPO Agent 的 1/Stop 动作会忽略这些)
+                # (只有当 action_value=0 且后端检查到 threshold > 0 时才会激活)
+                "early_stopping_entropy_threshold": args.early_stopping_entropy_threshold,
+                "early_stopping_length_threshold": args.early_stopping_length_threshold,
+                # --- ^^^ 新增 ^^^ ---
             }
 
             prompts_list.append(chat_prompt)
@@ -222,7 +228,10 @@ def main():
     parser.add_argument('--top_k', type=int, default=30)
     parser.add_argument('--think_end_str', type=str, default="</think>")
     parser.add_argument('--disable_overlap_schedule', action='store_true')
-
+    parser.add_argument('--early_stopping_entropy_threshold', type=float, default=0.0,
+                        help='(用于 force_mode=soft) 冷停止的熵阈值。设置 > 0 来启用。')
+    parser.add_argument('--early_stopping_length_threshold', type=int, default=200,
+                        help='(用于 force_mode=soft) 冷停止的连续步数。')
     # 结果保存和数据范围参数
     parser.add_argument('--output_dir', type=str, default="eval_results", help='Directory to save results')
     parser.add_argument('--start_idx', type=int, default=0, help='Start index for processing samples')

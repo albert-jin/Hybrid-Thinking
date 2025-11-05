@@ -73,6 +73,8 @@ echo "详细JSON结果将保存到: $OUTPUT_DIR"
         --temperature 0.6 \
         --top_p 0.95 \
         --force_mode hard  \
+        --early_stopping_entropy_threshold 0.01 \
+        --early_stopping_length_threshold 200 \
         --think_end_str "</think>" \
         --output_dir "$OUTPUT_DIR" \
         --start_idx $START_IDX \

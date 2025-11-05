@@ -732,10 +732,9 @@ class Req:
     # update_top_k_info 训练版-
     def update_top_k_info(self, logits_output, index, last_hidden_state):
         """
-        [PPO 魔改]
-        此方法现在是一个"傀儡"执行器。
-        它不
-        做任何决策，只服从 sampling_params 中的 'soft_hard_action' 指令。
+        [PPO 魔改 混合版]
+        1. 默认服从 PPO 指令 (0=Soft, 1=Hard, 2=Stop)。
+        2. 如果是 Soft (0)，额外检查冷停止阈值(用于 force_mode=soft 基线)。
         """
 
         # 1. 像原来一样，先获取 topk 信息
@@ -743,33 +742,63 @@ class Req:
         self.topk_idx = logits_output.topk_indices[index]
         self.entropy = logits_output.entropy[index]
         # --- PPO H_t 存储 ---
-        self.output_last_hidden_state = last_hidden_state # 存储 H_t
+        self.output_last_hidden_state = last_hidden_state  # 存储 H_t
         # --- PPO H_t 存储结束 ---
+
         # 2. 从采样参数中获取"动作指令"
+        #    (来自 PPO Agent (0,1,2) 或 force_mode (0,1))
         action_command = self.sampling_params.soft_hard_action
 
-        # 3. 执行指令
-        if action_command == 1:
-            # 指令 1: "Hard" 模式
+        # --- vvv 新增：冷停止逻辑 vvv ---
+
+        # 3. 检查是否需要执行"冷停止" (仅在 Soft 模式下检查)
+        #    (PPO Agent 自己的 "Stop" 动作 (2) 会在下面被处理)
+        if (action_command == 0 and
+            self.sampling_params.early_stopping_entropy_threshold > 0):
+
+            # 确保 </think> ID 已被编码
+            if self.sampling_params.think_end_str_id is None:
+                self.sampling_params.think_end_str_id = \
+                self.tokenizer.encode(self.sampling_params.think_end_str, add_special_tokens=False)[-1]
+
+            # 检查熵
+            if self.entropy < self.sampling_params.early_stopping_entropy_threshold:
+                self.low_entropy_steps += 1
+            else:
+                self.low_entropy_steps = 0
+
+            # 检查是否触发
+            if self.low_entropy_steps >= self.sampling_params.early_stopping_length_threshold:
+                print(f"Early stopping triggered (force_mode=soft)", flush=True)
+                # 强制将当前 token 替换为 </think>
+                self.output_ids[-1] = self.sampling_params.think_end_str_id
+
+                # 强制将 topk 设为 one-hot
+                self.topk_prob[1:].fill_(0)
+                self.topk_idx[1:].fill_(0)
+                self.topk_prob[0] = 1.0
+                self.topk_idx[0] = self.sampling_params.think_end_str_id
+                self.low_entropy_steps = 0  # 重置计数器
+
+                # 强制 SGLang 切换到 Hard 模式 (动作 1)
+                self.sampling_params.soft_hard_action = 1
+                action_command = 1  # 更新本地变量，以便步骤 4 正确执行
+
+        # --- ^^^ 冷停止逻辑结束 ^^^ ---
+
+        # 4. 执行指令 (Hard / Stop)
+        #    如果 action_command 是 1 (Hard) 或 2 (Stop)
+        #    或者它刚刚在步骤 3 中被冷停止逻辑设为了 1
+        if action_command == 1 or action_command == 2:
+            # 指令 1 (Hard) 或 2 (Stop)
             # 强制将 top-k 概率转换为 "one-hot"
-            # (即只保留采样到的第一个 token，概率为 1.0)
             self.topk_prob[1:].fill_(0)
             self.topk_idx[1:].fill_(0)
             self.topk_prob[0] = 1.0
 
-        elif action_command == 0:
-            # 指令 0: "Soft" 模式
-            # 不做任何事，保持 self.topk_prob (包含 K 个概率) 不变
-            pass
+        # (如果 action_command == 0 且未触发冷停止, 则保持 Soft Top-K 不变)
 
-        else:
-            # 默认/Fallback 行为 (如果指令未提供)
-            # 我们默认为 "Hard" 模式以确保安全
-            self.topk_prob[1:].fill_(0)
-            self.topk_idx[1:].fill_(0)
-            self.topk_prob[0] = 1.0
-
-        # 4. 像原来一样，保存 topk 列表 (用于最终输出)
+        # 5. 像原来一样，保存 topk 列表 (用于最终输出)
         if not self.finished():
             self.output_topk_prob_list_tmp.append(self.topk_prob)
             self.output_topk_idx_list_tmp.append(self.topk_idx)

@@ -105,11 +105,21 @@ def run_validation(llm, eval_samples, tokenizer, args, MATH_QUERY_TEMPLATE, resu
                 ground_truth = batch_ground_truth[i]
                 sample = batch_samples[i]
 
+                # <--- 新增：动态检查 "finish_reason" ---
+                # 从 SGLang 的输出中获取停止原因
+                finish_reason_dict = output["meta_info"]["finish_reason"]
+
+                # 如果类型是 "stop" (自然停止)，则为 True
+                # 如果类型是 "length" (达到 max_tokens)，则为 False
+                is_generation_finished = (finish_reason_dict.get("type") == "stop")
+                # <--- 新增结束 ---
+
+
                 # 1. 规则评估
                 rule_judge_result, extracted_answer = matheval.evaluator_map["gsm8k"].rule_judge(
                     generated_text,
                     ground_truth,
-                    True
+                    is_generation_finished  # <--- 修改：不再硬编码 True
                 )
 
                 # 2. LLM 评估 (如果规则失败且已启用)
@@ -120,7 +130,7 @@ def run_validation(llm, eval_samples, tokenizer, args, MATH_QUERY_TEMPLATE, resu
                             generated_text,
                             ground_truth,
                             extracted_answer,
-                            True
+                            is_generation_finished  # <--- 修改：不再硬编码 True
                         )
                     except Exception as e:
                         print(f"LLM Judge 失败: {e}")
@@ -143,22 +153,14 @@ def run_validation(llm, eval_samples, tokenizer, args, MATH_QUERY_TEMPLATE, resu
                     "avg_generated_tokens": output["meta_info"]["completion_tokens"],
                     "idx": sample["original_idx"],
                     "n": 1,
-                    "finish_generation": [output["meta_info"]["finish_reason"]],
-                    # <--- 修改：保存详细的 judge_info ---
+                    # <--- 修改：保存原始的 finish_reason 字典 ---
+                    "finish_generation": [finish_reason_dict],
+                    # <--- 修改结束 ---
+
                     "judge_info": [{"rule_judge_result": rule_judge_result, "llm_judge_result": llm_judge_result,
                                     "finally_judge_result": finally_judge_result}],
                     "passat1": pass_val,
                     "passat1_list": [pass_val],
-                    #
-                    # "output_topk_probs_list": output["meta_info"].get("output_topk_probs_list"),
-                    # "output_topk_indices_list": output["meta_info"].get("output_topk_indices_list"),
-                    #
-                    # "input_token_logprobs": output["meta_info"].get("input_token_logprobs"),
-                    # "output_token_logprobs": output["meta_info"].get("output_token_logprobs"),
-                    # "input_top_logprobs": output["meta_info"].get("input_top_logprobs"),
-                    # "output_top_logprobs": output["meta_info"].get("output_top_logprobs"),
-                    # "input_token_ids_logprobs": output["meta_info"].get("input_token_ids_logprobs"),
-                    # "output_token_ids_logprobs": output["meta_info"].get("output_token_ids_logprobs"),
                 }
                 results_list.append(result_dict)
                 # --- 修改结束 ---

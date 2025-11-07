@@ -32,6 +32,12 @@ class MathEvaluator:
 Reference answer: {ground_truth}
 Model-generated response: {solution_str}
 """.strip()
+#     def get_llm_judge_prompt_not_finished(self, solution_str: str, ground_truth: str, extracted_answer: str = "",
+#                                           finish_generation: bool = True) -> str:
+#         return f"""Please determine whether the final answer in the model-generated response was already correctly derived the first time in the reasoning process, and that the subsequent content consists mainly of unnecessary verification, overthinking, or repetitive reasoning. If correct is derived, return "YES"; if they are not, return "NO". Only return "YES" or "NO", and do not generate any other content.
+# Reference answer: {ground_truth}
+# Model-generated response: {solution_str}
+# """.strip()
 
     def llm_judge(self, solution_str: str, ground_truth: str, extracted_answer: str = "",
                   finish_generation: bool = True) -> bool:

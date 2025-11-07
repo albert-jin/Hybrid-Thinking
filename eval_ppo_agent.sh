@@ -12,16 +12,16 @@ MODEL_PATH="/root/shared-nvme/gj/Hybrid-Thinking/models/QwQ-32B/Qwen/QwQ-32B"
 
 # !! 关键 !!
 # !! 修改为您训练好的 Agent Checkpoint 文件的 *确切路径* !!
-PPO_CHECKPOINT_PATH="/root/shared-nvme/gj/Hybrid-Thinking/ppo_checkpoints/gsm8k_controller_20251103_003927/ppo_agent_step_1250.pth" # <--- 示例路径，请修改为您真实的 .pth 文件
+PPO_CHECKPOINT_PATH="/root/shared-nvme/gj/Hybrid-Thinking/ppo_checkpoints/gsm8k_controller_20251105_041949/ppo_agent_step_13500.pth" # <--- 示例路径，请修改为您真实的 .pth 文件
 
 # 验证集
-EVAL_DATASET_PATH="/root/shared-nvme/gj/Hybrid-Thinking/datasets/gsm8k_10.json"
+EVAL_DATASET_PATH="/root/shared-nvme/gj/Hybrid-Thinking/datasets/gsm8k.json"
 EVAL_BATCH_SIZE=64 # 评估时使用的批次大小
 
 # <--- 新增：结果保存目录和数据范围 --->
 OUTPUT_DIR="eval_results"  # 结果将保存在 ./eval_results/gsm8k/ 目录中
 START_IDX=0                # 从验证集的第 0 个样本开始
-END_IDX=10                 # 到第 10 个样本结束 (您可以设置为 10000 来运行全部)
+END_IDX=10000                # 到第 10 个样本结束 (您可以设置为 10000 来运行全部)
 # <--- 新增结束 --->
 
 # 资源配置

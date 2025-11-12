@@ -298,7 +298,7 @@ def main():
 
     # <--- 修改：将 force_mode (PPO/SOFT/HARD) 添加到文件名中 ---
     mode_str = args.force_mode.upper() # 结果为 "PPO", "SOFT", 或 "HARD"
-    base_filename = f"eval_{agent_name}_on_{dataset_name}_MODE_{mode_str}_{run_timestamp}"
+    base_filename = f"eval_{agent_name}_on_{dataset_name}_MODE_{mode_str}_MAXTOK_{args.max_generated_tokens}_{run_timestamp}"
     # <--- 修改结束 ---
 
     # 创建输出目录

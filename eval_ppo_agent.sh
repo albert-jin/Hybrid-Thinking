@@ -23,7 +23,7 @@ OUTPUT_DIR="eval_results"  # 结果将保存在 ./eval_results/gsm8k/ 目录中
 START_IDX=0                # 从验证集的第 0 个样本开始
 END_IDX=10000                # 到第 10 个样本结束 (您可以设置为 10000 来运行全部)
 # <--- 新增结束 --->
-
+MAX_GENERATED_TOKENS=2048
 # 资源配置
 NUM_GPUS=4
 MAX_RUNNING_REQUESTS=64
@@ -69,7 +69,7 @@ echo "详细JSON结果将保存到: $OUTPUT_DIR"
         --judge_model_name "deepseek-chat" \
         --use_llm_judge \
         \
-        --max_generated_tokens 1024 \
+        --max_generated_tokens "MAX_GENERATED_TOKENS" \
         --temperature 0.6 \
         --top_p 0.95 \
         --force_mode hard  \

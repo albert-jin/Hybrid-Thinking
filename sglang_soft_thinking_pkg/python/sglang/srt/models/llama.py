@@ -466,9 +466,16 @@ class LlamaForCausalLM(nn.Module):
             # 2. 我们需要手动提取 H_t (最后 token 的隐藏状态)
             if forward_batch.forward_mode.is_extend():
                 # Prefill 模式: 索引出最后一个 token
-                # (修复: 使用 .last_token_indices, 而不是 .input_metadata.last_token_indices)
-                last_token_indices = forward_batch.last_token_indices
-                H_t = hidden_states[last_token_indices] # [BatchSize, H]
+
+                # === 修改开始: 兼容性修复 ===
+                if hasattr(forward_batch, "last_token_indices"):
+                    last_token_indices = forward_batch.last_token_indices
+                else:
+                    # 如果 forward_batch 中没有该属性，使用 seq_lens 计算累加和来定位每个请求的最后一个 token
+                    last_token_indices = torch.cumsum(forward_batch.seq_lens, dim=0) - 1
+                # === 修改结束 ===
+
+                H_t = hidden_states[last_token_indices]  # [BatchSize, H]
             else:
                 # Decode 模式: hidden_states 已经是 [BatchSize, H]
                 H_t = hidden_states

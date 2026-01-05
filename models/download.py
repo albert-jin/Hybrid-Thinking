@@ -1,35 +1,37 @@
 from modelscope.hub.snapshot_download import snapshot_download
 import argparse
 import os
-import shutil
-import sys  # 导入 sys 库用于正常退出脚本
-# 模型从model scope下载
+import sys
+
+# --- 配置 ---
+# 这里设置为你想要存放所有模型的根目录
+# 当下载 'LLM-Research/Meta-Llama-3.1-8B-Instruct' 时，
+# 它会自动在该目录下创建 'LLM-Research/Meta-Llama-3.1-8B-Instruct' 文件夹
+MODELS_ROOT_DIR = "/root/shared-nvme/gj/Hybrid-Thinking/models"
+
 parser = argparse.ArgumentParser(description='Download model from ModelScope Hub')
-parser.add_argument('--model_name', type=str, default='qwen/Qwen-72B-Chat', help='Name of the model to download')
+parser.add_argument('--model_name', type=str, default='LLM-Research/Meta-Llama-3.1-8B-Instruct', help='Name of the model to download')
 args = parser.parse_args()
 
-local_dir = "./models/" + args.model_name
+# 拼接最终的模型目录路径用于检查
+local_dir = os.path.join(MODELS_ROOT_DIR, args.model_name)
 
-# --- 新增的核心检查逻辑 ---
-# 检查一个代表性的文件（如 config.json）是否存在于目标目录中
-# 如果存在，就认为模型已经下载好了
+# --- 核心检查逻辑 ---
+# 检查 config.json 是否存在，如果存在则跳过
 if os.path.exists(os.path.join(local_dir, "config.json")):
     print(f"Model already exists at: {local_dir}")
     print("Skipping download.")
-    sys.exit(0)  # 打印消息后正常退出脚本，返回码为 0
-# --- 检查逻辑结束 ---
+    sys.exit(0)
 
-# 如果模型不存在，则继续执行下面的下载和复制流程
-print(f"Model not found at {local_dir}. Starting download...")
-os.makedirs(local_dir, exist_ok=True)
+print(f"Model not found at {local_dir}. Starting direct download...")
 
-# 第 1 步: 下载模型到 ModelScope 的默认缓存目录
-print("Step 1: Downloading model to cache...")
-cache_path = snapshot_download(model_id=args.model_name,
-                               ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.gguf", "consolidated.safetensors"])
+# --- 下载逻辑 (修改版) ---
+# 使用 cache_dir 参数直接指向目标目录的父级
+# ModelScope 会自动处理目录结构: cache_dir/model_id
+snapshot_download(
+    model_id=args.model_name,
+    cache_dir=MODELS_ROOT_DIR,  # 关键修改：直接指定下载根路径
+    ignore_patterns=["*.msgpack", "*.h5", "*.ot", "*.gguf", "consolidated.safetensors"]
+)
 
-# 第 2 步: 将缓存目录中的文件递归复制到我们的目标目录
-print(f"Step 2: Copying files from {cache_path} to {local_dir}...")
-shutil.copytree(cache_path, local_dir, dirs_exist_ok=True)
-
-print(f"Model successfully downloaded and copied to: {local_dir}")
+print(f"Model successfully downloaded to: {local_dir}")

@@ -3,6 +3,12 @@
 This repository provides the official implementation of **HybridThink**, a framework that optimizes reasoning in Large Language Models (LLMs) by dynamically interleaving continuous concept tokens with discrete text tokens.
 
 ## 📌 About HybridThink
+   
+<p align="center">
+  <img src="./imgs/main.png" width="800" alt="HybridThink Architecture">
+  <br>
+  <em>Figure 1: The main architecture of HybridThink featuring the learned gating policy.</em>
+</p>
 
 HybridThink addresses two critical challenges in LLM reasoning:
 1.  **Manifold Deviation**: Accumulation of Out-of-Distribution (OOD) states in continuous reasoning.
@@ -79,30 +85,19 @@ bash scripts/run_local_lcb.sh
 | **Code-Check** | `run_code_reeval.sh` | Separate process for sandboxed code execution and scoring. |
 | **Benchmark** | `run_local_lcb.sh` | Dedicated evaluation for the LiveCodeBench suite. |
 
-[//]: # (---)
+---
 
-[//]: # ()
-[//]: # (## 🔗 Repository & Citation)
+## 🔗 Repository & Citation
 
-[//]: # ()
-[//]: # (If you use HybridThink in your research, please cite our work:)
+If you use HybridThink in your research, please cite our work:
 
-[//]: # ()
-[//]: # (**Code:** [https://github.com/SmileHappyEveryDay/Hybrid-Thinking]&#40;https://github.com/SmileHappyEveryDay/Hybrid-Thinking&#41;)
+**Code:** [https://github.com/SmileHappyEveryDay/Hybrid-Thinking](https://github.com/SmileHappyEveryDay/Hybrid-Thinking)
 
-[//]: # ()
-[//]: # (```bibtex)
-
-[//]: # (@article{hybridthink2025,)
-
-[//]: # (  title={HybridThink: Learned Interleaving of Continuous and Discrete Reasoning in Large Language Models},)
-
-[//]: # (  author={Anonymous Authors},)
-
-[//]: # (  journal={arXiv preprint},)
-
-[//]: # (  year={2026})
-
-[//]: # (})
-
-[//]: # (```)
+```bibtex
+@article{hybridthink2025,
+  title={HybridThink: Learned Interleaving of Continuous and Discrete Reasoning in Large Language Models},
+  author={Anonymous Authors},
+  journal={arXiv preprint},
+  year={2026}
+}
+```

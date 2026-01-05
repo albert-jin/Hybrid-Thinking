@@ -398,7 +398,7 @@ def main():
             if args.reeval:
                 import subprocess
                 orig_cwd = os.getcwd()
-                lcb_pkg_dir = "LiveCodeBench_pkg"
+                lcb_pkg_dir = "../LiveCodeBench_pkg"
                 custom_eval_cmd = [
                     sys.executable, "-m", "lcb_runner.runner.custom_evaluator",
                     "--custom_output_file", "../" + results_file_converted,

@@ -5,7 +5,7 @@ data
 
 *.egg-info
 __pycache__/*
-models/*
+../models/*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -7,7 +7,7 @@ import re  # 必须导入
 from tqdm import tqdm
 
 # === 配置您下载的本地路径 ===
-LCB_PKG_DIR = "/root/shared-nvme/gj/Hybrid-Thinking/LiveCodeBench_pkg"
+LCB_PKG_DIR = "/LiveCodeBench_pkg"
 
 
 # ==========================

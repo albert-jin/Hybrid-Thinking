@@ -415,7 +415,7 @@ def main():
             convert_livecodebench.convert_json(input_file=results_file, output_file=results_file_converted)
 
             orig_cwd = os.getcwd()
-            lcb_pkg_dir = "LiveCodeBench_pkg" # (假设在同级)
+            lcb_pkg_dir = "../LiveCodeBench_pkg"  # (假设在同级)
             if not os.path.isdir(lcb_pkg_dir):
                 print(f"警告: 找不到 '{lcb_pkg_dir}' 目录, 跳过 LCB 外部评估。")
             else:

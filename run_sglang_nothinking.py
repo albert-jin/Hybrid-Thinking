@@ -353,7 +353,7 @@ Test Cases:
 
             # Save current working directory
             orig_cwd = os.getcwd()
-            lcb_pkg_dir = "LiveCodeBench_pkg"
+            lcb_pkg_dir = "../LiveCodeBench_pkg"
 
             # Compose the command for custom_evaluator
             custom_eval_cmd = [

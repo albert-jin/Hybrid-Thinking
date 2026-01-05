@@ -54,7 +54,7 @@ RUN python -m pip install --upgrade "pip==25.1.1" "setuptools==78.1.1" "wheel==0
     && python -m pip install --no-cache-dir -r /tmp/requirements.st.txt
 
 # Install local editable packages
-COPY LiveCodeBench_pkg /workspace/LiveCodeBench_pkg
+COPY ../LiveCodeBench_pkg /workspace/LiveCodeBench_pkg
 RUN cd /workspace/LiveCodeBench_pkg \
     && python -m pip install -e .
 
